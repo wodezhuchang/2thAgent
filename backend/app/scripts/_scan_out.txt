@@ -1,0 +1,11 @@
+﻿扫描到文档数: 50
+  外部权威资料/义务教育_体育与健康_义务教育体育与健康课程标准2022年版.pdf -> type=curriculum, subject=体育
+  外部权威资料/义务教育_信息科技_义务教育信息科技课程标准2022年版.pdf -> type=curriculum, subject=信息科技
+  外部权威资料/义务教育_劳动_义务教育劳动课程标准2022年版.pdf -> type=curriculum, subject=劳动
+  外部权威资料/义务教育_化学_义务教育化学课程标准2022年版.pdf -> type=curriculum, subject=化学
+  外部权威资料/义务教育_历史_义务教育历史课程标准2022年版.pdf -> type=curriculum, subject=历史
+  外部权威资料/义务教育_地理_义务教育地理课程标准2022年版.pdf -> type=curriculum, subject=地理
+  外部权威资料/义务教育_数学_义务教育数学课程标准2022年版.pdf -> type=curriculum, subject=数学
+  外部权威资料/义务教育_物理_义务教育物理课程标准2022年版.pdf -> type=curriculum, subject=物理
+类型分布: {'curriculum': 30, 'case': 14, 'general': 1, 'rubric': 5}
+学科分布(前10): {'数学': 4, '英语': 4, 'general': 4, '体育': 3, '化学': 3, '历史': 3, '地理': 3, '物理': 3, '生物': 3, '语文': 3}

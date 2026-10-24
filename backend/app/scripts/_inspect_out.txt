@@ -1,0 +1,4 @@
+﻿页数: 189
+页面对象属性: ['/Contents', '/CropBox', '/MediaBox', '/Parent', '/Resources', '/Rotate', '/Type']
+XObject 条目: {'/Im0': "{'/BitsPerComponent': 8, '/ColorSpace': IndirectObject(1480, 0, 3042489822784), '/Filter': '/DCTDecode', '/Height': 1536, '/Name': '/X', '/Subtype': '/Image', '/Type': '/XObject', '/Width': 1087}"}
+Font 条目: {}
