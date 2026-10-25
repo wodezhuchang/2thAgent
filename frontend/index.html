@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>师范生试讲智能评价 Agent</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #333; padding: 24px; }
+  .container { max-width: 1000px; margin: 0 auto; }
+  h1 { text-align: center; margin-bottom: 4px; color: #1a3c5e; }
+  .sub { text-align: center; color: #888; margin-bottom: 24px; font-size: 14px; }
+  .card { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .card h2 { font-size: 16px; margin-bottom: 14px; color: #1a3c5e; border-left: 4px solid #3b82f6; padding-left: 10px; }
+  label { display: block; margin: 8px 0 4px; font-size: 13px; color: #555; }
+  input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+  textarea { resize: vertical; min-height: 60px; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button { margin-top: 16px; padding: 10px 24px; background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }
+  button:hover { background: #2b6cd4; }
+  button:disabled { background: #9db8e0; cursor: not-allowed; }
+  .dim { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed #eee; }
+  .score-big { font-size: 40px; font-weight: bold; color: #3b82f6; text-align: center; margin: 10px 0; }
+  .tag { display: inline-block; background: #eef4ff; color: #1a3c5e; border-radius: 4px; padding: 2px 8px; font-size: 12px; margin: 3px; }
+  .weak { background: #fff3cd; color: #856404; }
+  .timeline-item { border-left: 3px solid #3b82f6; padding: 8px 12px; margin: 8px 0; background: #f8fbff; }
+  .hidden { display: none; }
+  #loading { text-align: center; color: #3b82f6; margin: 20px 0; }
+  #error { color: #c0392b; background: #fdecea; padding: 10px; border-radius: 6px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>师范生试讲多模态智能评价 Agent</h1>
+  <div class="sub">试讲 → 多维度结构化评课 → 短板追踪 → 针对性训练规划</div>
+
+  <div class="card">
+    <h2>提交试讲</h2>
+    <div class="row">
+      <div><label>用户ID</label><input id="user_id" value="demo_user"></div>
+      <div><label>学科</label><input id="subject" value="数学"></div>
+      <div><label>课题</label><input id="lesson" value="一次函数"></div>
+    </div>
+    <div class="row">
+      <div><label>课型</label><select id="lesson_type"><option>新授课</option><option>复习课</option><option>练习课</option></select></div>
+      <div><label>学段</label><input id="grade_level" value="初中"></div>
+      <div><label>时长(秒)</label><input id="duration" type="number" value="600"></div>
+    </div>
+
+    <label>① 上传试讲视频（自动 ASR+OCR+姿态+时间轴）</label>
+    <input id="video_file" type="file" accept="video/*" style="padding:6px">
+    <div style="font-size:12px;color:#888;margin:4px 0 10px">支持 mp4/avi 等；3分钟视频约需 1-2 分钟感知+评价</div>
+
+    <details style="margin:10px 0">
+      <summary style="cursor:pointer;color:#3b82f6;font-size:13px">② 测试快捷路径：粘贴已转写文本（跳过视频感知）</summary>
+      <label>讲授语音转录（ASR）</label>
+      <textarea id="asr_text" placeholder="粘贴试讲语音转录文本…"></textarea>
+      <label>板书 OCR 文字</label>
+      <textarea id="board_text" placeholder="粘贴板书识别文字…"></textarea>
+    </details>
+
+    <button id="run" onclick="runEval()">开始评价</button>
+    <div id="loading" class="hidden">⏳ Agent 正在分析中…（视频感知：ASR/OCR/姿态/时间轴 → 四维评价）</div>
+    <div id="sensing_log" class="hidden" style="font-size:12px;color:#555;margin-top:8px;background:#f8f9fa;padding:8px;border-radius:6px"></div>
+    <div id="error" class="hidden"></div>
+  </div>
+
+  <div id="result" class="hidden">
+    <div class="card">
+      <h2>评价结果</h2>
+      <div class="score-big" id="overall">--</div>
+      <div id="dims"></div>
+      <div id="disclaimer" style="font-size:12px;color:#999;margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>个人成长档案（记忆追踪）</h2>
+      <div id="growth_summary" style="font-size:13px;color:#555;margin-bottom:12px"></div>
+      <h3 style="font-size:14px;color:#1a3c5e;margin:14px 0 6px">▍四维成长曲线（0-5分）</h3>
+      <div id="growth_chart"></div>
+      <h3 style="font-size:14px;color:#1a3c5e;margin:18px 0 6px">▍短板热力图（颜色越深=该指标越弱）</h3>
+      <div id="heatmap"></div>
+    </div>
+    <div class="card">
+      <h2>短板清单</h2>
+      <div id="weaknesses"></div>
+    </div>
+    <div class="card">
+      <h2>分段式细节评语</h2>
+      <div id="timeline"></div>
+    </div>
+    <div class="card">
+      <h2>训练规划</h2>
+      <div id="training"></div>
+    </div>
+    <div class="card">
+      <h2>进步对比</h2>
+      <div id="progress"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "/api";
+async function runEval() {
+  const btn = document.getElementById('run');
+  btn.disabled = true;
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('error').classList.add('hidden');
+  document.getElementById('result').classList.add('hidden');
+  document.getElementById('sensing_log').classList.add('hidden');
+  const videoFile = document.getElementById('video_file').files[0];
+  try {
+    let r;
+    if (videoFile) {
+      // 主路径：上传视频，后端自动跑感知
+      const fd = new FormData();
+      fd.append('video', videoFile);
+      fd.append('user_id', v('user_id'));
+      fd.append('subject', v('subject'));
+      fd.append('lesson', v('lesson'));
+      fd.append('lesson_type', v('lesson_type'));
+      fd.append('grade_level', v('grade_level'));
+      fd.append('duration_seconds', parseInt(v('duration')) || 600);
+      const res = await fetch(API + '/evaluate_video', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(await res.text());
+      r = await res.json();
+      // 显示感知日志
+      if (r.sensing_steps) {
+        const sl = document.getElementById('sensing_log');
+        sl.innerHTML = '🔧 多模态感知：' + r.sensing_steps.map(s =>
+          `<span style="margin-right:10px">${s.tool}: ${s.ok ? '✓' : '✗ ' + (s.error||'')}</span>`).join('')
+          + `（耗时 ${r.sensing_elapsed}s）`;
+        sl.classList.remove('hidden');
+      }
+    } else {
+      // 测试快捷路径：直接文本
+      const body = {
+        user_id: v('user_id'), subject: v('subject'), lesson: v('lesson'),
+        lesson_type: v('lesson_type'), grade_level: v('grade_level'),
+        duration_seconds: parseInt(v('duration')) || 600,
+        asr_text: v('asr_text'), board_text: v('board_text')
+      };
+      const res = await fetch(API + '/evaluate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(await res.text());
+      r = await res.json();
+    }
+    render(r);
+  } catch(e) {
+    const er = document.getElementById('error');
+    er.textContent = '评价失败: ' + e.message;
+    er.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    document.getElementById('loading').classList.add('hidden');
+  }
+}
+function v(id){ return document.getElementById(id).value; }
+function render(r){
+  const sc = r.scores || {};
+  document.getElementById('overall').textContent = sc.overall_percent + ' 分';
+  const dimMap = {D1_teaching_design:'教学设计', D2_language:'讲授语言', D3_blackboard:'课堂板书', D4_presence:'教姿教态'};
+  let dh = '';
+  for (const [k,val] of Object.entries(dimMap)) {
+    if (sc[k]) dh += `<div class="dim"><span>${val} <small>(${k})</small></span><b>${sc[k].total} / 5</b></div>`;
+  }
+  document.getElementById('dims').innerHTML = dh;
+  document.getElementById('disclaimer').textContent = r.disclaimer || '';
+  document.getElementById('weaknesses').innerHTML = (r.weaknesses||[]).map(w=>`<span class="tag weak">${w}</span>`).join(' ');
+  document.getElementById('timeline').innerHTML = (r.timeline_feedback||[]).map(t =>
+    `<div class="timeline-item"><b>${t.segment} ${t.timestamp_start}-${t.timestamp_end}</b><div>${t.issue}</div><div style="color:#3b82f6">建议：${t.suggestion}</div></div>`).join('');
+  const tp = r.training_plan || {};
+  document.getElementById('training').innerHTML =
+    `<p><b>重点：</b>${tp.next_focus||''}</p>` +
+    `<p style="margin-top:8px"><b>任务：</b></p>` + (tp.specific_tasks||[]).map(t=>`<div>• ${t}</div>`).join('') +
+    `<p style="margin-top:8px"><b>参考案例：</b>${tp.reference_case||''}</p>` +
+    `<p><b>建议练习次数：</b>${tp.estimated_repeat_times||''}</p>`;
+  const pc = r.progress_compare || {};
+  const trendMap = {improved:'📈 进步', declined:'📉 退步', flat:'➖ 持平', first_try:'🆕 首次试讲'};
+  document.getElementById('progress').innerHTML =
+    `<p><b>趋势：</b>${trendMap[pc.trend]||pc.trend}</p>` +
+    (pc.vs_previous_try_id ? `<p>对比上次：${pc.vs_previous_try_id}</p>`:'') +
+    (pc.dimension_deltas ? `<p>维度变化：${JSON.stringify(pc.dimension_deltas)}</p>`:'');
+  document.getElementById('result').classList.remove('hidden');
+  loadGrowth(v('user_id'));
+}
+
+// ============ P0：个人成长档案可视化 ============
+async function loadGrowth(uid) {
+  try {
+    const res = await fetch(`/api/users/${encodeURIComponent(uid)}/growth`);
+    const g = await res.json();
+    renderGrowth(g);
+  } catch(e) {
+    document.getElementById('growth_summary').textContent = '成长档案加载失败: ' + e.message;
+  }
+}
+
+function renderGrowth(g) {
+  const pts = g.points || [];
+  const n = pts.length;
+  const dimNames = {D1:'教学设计', D2:'讲授语言', D3:'课堂板书', D4:'教姿教态'};
+  const colors = {D1:'#3b82f6', D2:'#10b981', D3:'#f59e0b', D4:'#ef4444'};
+
+  // 摘要
+  if (n === 0) {
+    document.getElementById('growth_summary').innerHTML = '暂无历史试讲记录。';
+    document.getElementById('growth_chart').innerHTML = '';
+    document.getElementById('heatmap').innerHTML = '';
+    return;
+  }
+  const first = pts[0].overall, last = pts[n-1].overall;
+  const delta = (last - first).toFixed(1);
+  document.getElementById('growth_summary').innerHTML =
+    `📊 共 <b>${n}</b> 次试讲记录　|　首次总分 <b>${first}</b> → 最近 <b>${last}</b>　|　变化 <b style="color:${delta>=0?'#10b981':'#ef4444'}">${delta>=0?'+':''}${delta}</b>`;
+
+  // === 1. 成长曲线 SVG ===
+  const W = 760, H = 260, padL=50, padR=20, padT=20, padB=30;
+  const iw = W-padL-padR, ih = H-padT-padB;
+  const X = i => n===1 ? padL+iw/2 : padL + iw*i/(n-1);
+  const Y = v => padT + ih*(1 - v/5);  // 0-5
+  let svg = `<svg width="${W}" height="${H}" style="background:#fafbfc;border-radius:6px">`;
+  // 网格
+  for (let v=0; v<=5; v++) {
+    svg += `<line x1="${padL}" y1="${Y(v)}" x2="${W-padR}" y2="${Y(v)}" stroke="#e5e7eb" stroke-width="1"/>`;
+    svg += `<text x="${padL-8}" y="${Y(v)+4}" font-size="10" fill="#888" text-anchor="end">${v}</text>`;
+  }
+  // X轴标签
+  pts.forEach((p,i)=>{ svg += `<text x="${X(i)}" y="${H-padB+16}" font-size="10" fill="#888" text-anchor="middle">第${p.index}次</text>`; });
+  // 四条线
+  for (const d of ['D1','D2','D3','D4']) {
+    const path = pts.map((p,i)=>`${i===0?'M':'L'}${X(i)},${Y(p.dims[d]||0)}`).join(' ');
+    svg += `<path d="${path}" fill="none" stroke="${colors[d]}" stroke-width="2"/>`;
+    pts.forEach((p,i)=>{ svg += `<circle cx="${X(i)}" cy="${Y(p.dims[d]||0)}" r="3" fill="${colors[d]}"/>`; });
+  }
+  // 图例
+  let lx = padL;
+  for (const d of ['D1','D2','D3','D4']) {
+    svg += `<rect x="${lx}" y="${H-12}" width="10" height="10" fill="${colors[d]}"/><text x="${lx+14}" y="${H-3}" font-size="10" fill="#555">${dimNames[d]}</text>`;
+    lx += 110;
+  }
+  svg += '</svg>';
+  document.getElementById('growth_chart').innerHTML = svg;
+
+  // === 2. 短板热力图：行=二级指标，列=次数 ===
+  const itemNames = g.item_names || {};
+  // 收集所有出现过的二级指标
+  const indSet = new Set();
+  pts.forEach(p=>Object.keys(p.items||{}).forEach(k=>indSet.add(k)));
+  const inds = [...indSet].sort();
+  const cellW = 56, cellH = 24, labelW = 90;
+  const hmW = labelW + cellW*n + 20;
+  const hmH = cellH*(inds.length+1) + 30;
+  let hm = `<svg width="${hmW}" height="${hmH}" style="background:#fafbfc;border-radius:6px">`;
+  // 列头
+  pts.forEach((p,i)=>{ hm += `<text x="${labelW+cellW*i+cellW/2}" y="14" font-size="10" fill="#888" text-anchor="middle">第${p.index}次</text>`; });
+  inds.forEach((ind,ri)=>{
+    hm += `<text x="${labelW-6}" y="${30+cellH*ri+cellH/2+4}" font-size="10" fill="#555" text-anchor="end">${ind} ${itemNames[ind]||''}</text>`;
+    pts.forEach((p,ci)=>{
+      const v = (p.items||{})[ind];
+      // 色阶：低=红(弱)，高=绿(强)
+      const t = v==null ? 0.5 : v/5;
+      const bg = v==null ? '#eee' : `rgba(${Math.round(239-99*t)},${Math.round(68+152*t)},${Math.round(68+17*t)},0.85)`;
+      hm += `<rect x="${labelW+cellW*ci}" y="${30+cellH*ri}" width="${cellW-2}" height="${cellH-2}" fill="${bg}" rx="3"/>`;
+      hm += `<text x="${labelW+cellW*ci+cellW/2}" y="${30+cellH*ri+cellH/2+4}" font-size="10" fill="#fff" text-anchor="middle">${v==null?'-':v}</text>`;
+    });
+  });
+  hm += '</svg>';
+  document.getElementById('heatmap').innerHTML = hm;
+}
+</script>
+</body>
+</html>

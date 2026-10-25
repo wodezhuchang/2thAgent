@@ -1,0 +1,17 @@
+# 密钥与环境配置 —— 禁止提交
+backend/.env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 数据与知识库（本地生成，可复现）
+backend/data/
+*.db
+*.sqlite3
+
+# 运行日志
+*.log
