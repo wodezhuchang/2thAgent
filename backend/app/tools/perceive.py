@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from app.tools.registry import registry
@@ -26,32 +27,58 @@ def perceive_video(video_path: str, trial_id: str,
                    asr_segments: list | None = None) -> dict:
     """统一调度四类感知工具，返回可送入评价的多模态信号 + 落盘档案。
 
-    Args:
-        video_path: 试讲视频绝对路径。
-        trial_id: 本次试讲标识（用于感知档案落盘目录）。
-        asr_segments: 可选，若已做过 ASR 可传入分段（避免重复转写）。
-    Returns:
-        {
-          "multimodal": 供评价器消费的多模态信号（asr_text/board_text/timeline/posture...）,
-          "senses": {tool: 档案文件路径},
-          "steps": 工具调用记录（供 trace 展示）,
-        }
+    优化：ASR / OCR / pose 三个独立任务并行跑，timeline 依赖 ASR 结果。
     """
     steps: list[dict] = []
     t0 = time.time()
 
-    # 1. ASR（语音）
-    try:
-        asr = registry.call("asr_transcribe", video_or_audio=video_path)
+    # 并行跑三个独立任务：ASR、OCR、pose
+    results = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {
+            ex.submit(registry.call, "asr_transcribe", video_or_audio=video_path): "asr",
+            ex.submit(registry.call, "ocr_board", video_or_image=video_path, max_frames=30): "ocr",
+            ex.submit(registry.call, "pose_analyze", video_path=video_path, n_frames=20): "pose",
+        }
+        for f in as_completed(futures):
+            name = futures[f]
+            try:
+                results[name] = f.result()
+            except Exception as e:
+                results[name] = None
+                if name == "asr":
+                    steps.append({"tool": "asr_transcribe", "ok": False, "error": str(e)})
+                elif name == "ocr":
+                    steps.append({"tool": "ocr_board", "ok": False, "error": str(e)})
+                elif name == "pose":
+                    steps.append({"tool": "pose_analyze", "ok": False, "error": str(e)})
+
+    asr = results.get("asr")
+    ocr = results.get("ocr")
+    pose = results.get("pose")
+
+    if asr:
         asr_text = asr.get("text", "")
         steps.append({"tool": "asr_transcribe", "ok": True,
                       "words": len(asr.get("words", [])), "segments": len(asr.get("segments", []))})
-    except Exception as e:
-        asr, asr_text = None, ""
-        steps.append({"tool": "asr_transcribe", "ok": False, "error": str(e)})
+    else:
+        asr_text = ""
 
-    # 2. 时间轴（用 ASR 分段；无则跳过）
+    if ocr:
+        board_text = ocr.get("text", "")
+        steps.append({"tool": "ocr_board", "ok": True, "lines": len(ocr.get("lines", []))})
+    else:
+        board_text = ""
+
+    if pose:
+        posture = pose.get("metrics", {})
+        steps.append({"tool": "pose_analyze", "ok": True, "detected": pose.get("detected", 0)})
+    else:
+        posture = {}
+
+    # 时间轴（依赖 ASR 分段，ASR 完成后跑）
     timeline = []
+    tl = None
     if asr:
         try:
             tl = registry.call("timeline_slice", segments=asr.get("segments", []))
@@ -59,26 +86,6 @@ def perceive_video(video_path: str, trial_id: str,
             steps.append({"tool": "timeline_slice", "ok": True, "phases": len(timeline)})
         except Exception as e:
             steps.append({"tool": "timeline_slice", "ok": False, "error": str(e)})
-
-    # 3. OCR（板书）
-    board_text = ""
-    try:
-        ocr = registry.call("ocr_board", video_or_image=video_path, max_frames=30)
-        board_text = ocr.get("text", "")
-        steps.append({"tool": "ocr_board", "ok": True, "lines": len(ocr.get("lines", []))})
-    except Exception as e:
-        ocr = None
-        steps.append({"tool": "ocr_board", "ok": False, "error": str(e)})
-
-    # 4. 姿态
-    posture = {}
-    try:
-        pose = registry.call("pose_analyze", video_path=video_path, n_frames=20)
-        posture = pose.get("metrics", {})
-        steps.append({"tool": "pose_analyze", "ok": True, "detected": pose.get("detected", 0)})
-    except Exception as e:
-        pose = None
-        steps.append({"tool": "pose_analyze", "ok": False, "error": str(e)})
 
     # 组装多模态信号（评价器消费的字段，对齐 llm_client.build_user_prompt）
     multimodal = {}

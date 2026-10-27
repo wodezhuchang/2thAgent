@@ -231,6 +231,73 @@ def traces() -> dict:
     return {"count": len(files), "files": [f.name for f in files[-20:]]}
 
 
+@app.get("/api/triage/pending")
+def triage_pending(limit: int = 50) -> dict:
+    """待专家复评的试讲列表。"""
+    memory_store.init_db()
+    trials = memory_store.get_pending_reviews(limit=limit)
+    return {"count": len(trials), "trials": trials}
+
+
+@app.post("/api/expert-review")
+def expert_review(body: dict) -> dict:
+    """专家提交复评意见。
+    body: {try_id, expert_id, final_scores: {D1:{total}, D2:{total}, ..., overall_percent}, comments}
+    """
+    memory_store.init_db()
+    try_id = body.get("try_id", "")
+    expert_id = body.get("expert_id", "expert")
+    final_scores = body.get("final_scores", {})
+    comments = body.get("comments", "")
+    if not try_id:
+        return {"error": "try_id 不能为空"}
+    result = memory_store.submit_expert_review(try_id, expert_id, final_scores, comments)
+    return {"status": "ok", **result}
+
+
+@app.get("/api/messages")
+def get_messages(user_id: str) -> dict:
+    """查询用户未读消息。"""
+    memory_store.init_db()
+    msgs = memory_store.get_unread_messages(user_id)
+    return {"count": len(msgs), "messages": msgs}
+
+
+@app.post("/api/messages/read")
+def read_messages(body: dict) -> dict:
+    """标记消息已读。body: {user_id, message_ids?: []}"""
+    memory_store.init_db()
+    user_id = body.get("user_id", "")
+    message_ids = body.get("message_ids")
+    if not user_id:
+        return {"error": "user_id 不能为空"}
+    count = memory_store.mark_messages_read(user_id, message_ids)
+    return {"status": "ok", "marked": count}
+
+
+@app.get("/api/chat")
+def chat(body: dict) -> dict:
+    """试讲陪练聊天助手。
+    body: {user_id, message, session_id?}
+    """
+    from app.chat import service as chat_service
+    memory_store.init_db()
+    user_id = body.get("user_id", "")
+    message = body.get("message", "")
+    session_id = body.get("session_id")
+    if not user_id or not message:
+        return {"error": "user_id 和 message 不能为空"}
+    result = chat_service.chat(user_id, message, session_id)
+    return {"status": "ok", **result}
+
+
+@app.get("/api/calibration")
+def calibration() -> dict:
+    """查询系统校准状态（机器分vs专家分偏差）。"""
+    memory_store.init_db()
+    return memory_store.compute_calibration_offset()
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "trial-eval-agent"}

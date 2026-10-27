@@ -9,6 +9,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# 国内 HuggingFace 镜像（避免连接超时）
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ.setdefault("HF_HUB_OFFLINE", "0")
+
 # ---------- 路径 ----------
 BASE_DIR = Path(__file__).resolve().parents[3]          # D:\2thAgent
 BACKEND_DIR = BASE_DIR / "backend"

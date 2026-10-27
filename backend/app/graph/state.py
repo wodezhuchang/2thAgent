@@ -21,6 +21,8 @@ class AgentState(TypedDict, total=False):
     memory_summary: str             # 历史记忆摘要
     scores: dict[str, Any]          # 四维评分（对齐 schema）
     dim_results: dict[str, Any]     # 各维度原始结果（含 comment）
+    confidence: dict[str, float]    # 各维度置信度（D1-D4，0-1，客观计算）
+    triage_result: dict[str, Any]   # 智能分流结果 {route: A/B/C, reason, weak_dims}
     report: dict[str, Any]          # 完整评价报告（合成后）
     reflection: dict[str, Any]      # Reflexion 自查结果
     progress: dict[str, Any]        # 记忆模块返回的进步对比

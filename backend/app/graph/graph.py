@@ -144,6 +144,28 @@ def node_synthesize(state: AgentState) -> dict:
     return {"report": report, "trace": state["trace"]}
 
 
+def node_evidence_check(state: AgentState) -> dict:
+    """⑥ 证据链检查：计算每个维度的客观置信度。"""
+    from app.evaluator import evidence_check
+    multimodal = state.get("multimodal") or {}
+    confidence = evidence_check.compute_confidence(multimodal)
+    state["confidence"] = confidence
+    state["trace"].append({"step": "evidence_check", "confidence": confidence})
+    return {"confidence": confidence, "trace": state["trace"]}
+
+
+def node_triage(state: AgentState) -> dict:
+    """⑦ 智能分流：根据置信度和硬规则分 A/B/C 三路。"""
+    from app.evaluator import evidence_check
+    confidence = state.get("confidence") or {}
+    multimodal = state.get("multimodal") or {}
+    result = evidence_check.triage(confidence, multimodal)
+    state["triage_result"] = result
+    state["trace"].append({"step": "triage", "route": result["route"],
+                           "reason": result["reason"]})
+    return {"triage_result": result, "trace": state["trace"]}
+
+
 def node_reflect(state: AgentState) -> dict:
     """⑥ Reflexion 自查：检验幻觉/违背课标/遗漏，必要时修正。"""
     client = llm_client.get_llm_client()
@@ -160,12 +182,12 @@ def node_reflect(state: AgentState) -> dict:
 
 def node_memory_write(state: AgentState) -> dict:
     """记忆写入：落 evaluation + progress + training_plan。"""
-    report = state["report"]
-    scores = report.get("scores", {})
+    report = state.get("report") or {}
+    scores = report.get("scores") or {}
     # scores 键为 D1_teaching_design 等，需转成 D1 供记忆模块计算
     scores_dim = {}
     for skey, sval in scores.items():
-        if skey.startswith("D") and isinstance(sval, dict):
+        if isinstance(sval, dict) and skey.startswith("D"):
             dim = skey.split("_")[0]
             scores_dim[dim] = sval
     meta = state["meta"]
@@ -189,9 +211,23 @@ def node_memory_write(state: AgentState) -> dict:
                 estimated_repeat_times=tp.get("estimated_repeat_times", 1))
         state["trace"].append({"step": "memory_write", "eval_id": prog["eval_id"],
                                "trend": prog["trend"]})
+        # 写入分流结果到 evaluation 表
+        triage = state.get("triage_result") or {}
+        route = triage.get("route", "A")
+        review_status = "auto_pass" if route == "A" else "pending_expert"
+        conn = memory_store._connect()
+        conn.execute(
+            "UPDATE evaluation SET triage_route = ?, review_status = ? WHERE eval_id = ?",
+            (route, review_status, prog["eval_id"]))
+        conn.commit()
+        conn.close()
     except Exception as e:
-        state["errors"] = state.get("errors", []) + [f"memory_write: {e}"]
+        import traceback as _tb
+        err_detail = f"memory_write: {e}\n{_tb.format_exc()}"
+        state["errors"] = state.get("errors", []) + [err_detail]
         state["trace"].append({"step": "memory_write_error", "error": str(e)})
+        # 同时写到 stderr 方便排查
+        print(f"[memory_write ERROR] {e}", flush=True)
         prog = None
     return {"progress": prog, "trace": state["trace"]}
 
@@ -219,6 +255,8 @@ def build_graph():
     g.add_node("memory_read", node_memory_read)
     g.add_node("evaluate", node_evaluate)
     g.add_node("synthesize", node_synthesize)
+    g.add_node("evidence_check", node_evidence_check)
+    g.add_node("triage", node_triage)
     g.add_node("reflect", node_reflect)
     g.add_node("memory_write", node_memory_write)
     g.add_node("finalize", node_finalize)
@@ -229,7 +267,9 @@ def build_graph():
     g.add_edge("retrieve", "memory_read")
     g.add_edge("memory_read", "evaluate")
     g.add_edge("evaluate", "synthesize")
-    g.add_edge("synthesize", "reflect")
+    g.add_edge("synthesize", "evidence_check")
+    g.add_edge("evidence_check", "triage")
+    g.add_edge("triage", "reflect")
     g.add_edge("reflect", "memory_write")
     g.add_edge("memory_write", "finalize")
     g.add_edge("finalize", END)

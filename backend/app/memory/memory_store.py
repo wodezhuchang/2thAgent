@@ -88,9 +88,50 @@ def init_db(db_path: Path | None = None) -> None:
         estimated_repeat_times INTEGER,
         status      TEXT
     );
+    CREATE TABLE IF NOT EXISTS expert_review (
+        review_id      TEXT PRIMARY KEY,
+        try_id         TEXT,
+        expert_id      TEXT,
+        reviewed_at    TEXT,
+        final_scores   TEXT,
+        comments       TEXT,
+        disagree_dims  TEXT,
+        score_deltas   TEXT
+    );
+    CREATE TABLE IF NOT EXISTS message (
+        message_id     TEXT PRIMARY KEY,
+        user_id        TEXT,
+        type           TEXT,
+        related_try_id TEXT,
+        title          TEXT,
+        content        TEXT,
+        is_read        INTEGER DEFAULT 0,
+        created_at     TEXT
+    );
+    CREATE TABLE IF NOT EXISTS chat_message (
+        message_id   TEXT PRIMARY KEY,
+        user_id      TEXT,
+        role         TEXT,
+        content      TEXT,
+        intent       TEXT,
+        session_id   TEXT,
+        created_at   TEXT
+    );
     CREATE INDEX IF NOT EXISTS idx_eval_user ON evaluation(user_id);
     CREATE INDEX IF NOT EXISTS idx_trial_user ON trial(user_id);
+    CREATE INDEX IF NOT EXISTS idx_message_user ON message(user_id, is_read);
+    CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_message(user_id, session_id);
     """)
+    # 迁移：检查 evaluation 表是否已有新字段
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(evaluation)").fetchall()]
+    if "review_status" not in cols:
+        conn.execute("ALTER TABLE evaluation ADD COLUMN review_status TEXT DEFAULT 'pending'")
+    if "triage_route" not in cols:
+        conn.execute("ALTER TABLE evaluation ADD COLUMN triage_route TEXT")
+    if "expert_score" not in cols:
+        conn.execute("ALTER TABLE evaluation ADD COLUMN expert_score REAL")
+    if "calibration_note" not in cols:
+        conn.execute("ALTER TABLE evaluation ADD COLUMN calibration_note TEXT")
     conn.commit()
     conn.close()
 
@@ -329,3 +370,202 @@ def get_growth_timeline(user_id: str, limit: int = 20, db_path: Path | None = No
     return {"points": points, "count": len(points),
             "dim_names": {"D1": "教学设计", "D2": "讲授语言", "D3": "课堂板书", "D4": "教姿教态"},
             "item_names": settings.INDICATOR_NAMES}
+
+
+def get_pending_reviews(limit: int = 50) -> list[dict]:
+    """查询待专家复评的试讲列表（非 auto_pass 的都需要复评）。"""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT e.try_id, e.user_id, e.overall_percent, e.triage_route, "
+        "e.created_at, t.subject, t.lesson_type "
+        "FROM evaluation e LEFT JOIN trial t ON e.try_id = t.try_id "
+        "WHERE e.review_status IS NULL OR e.review_status != 'auto_pass' "
+        "ORDER BY e.created_at DESC LIMIT ?",
+        (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------- 专家复评 ----------------
+
+def submit_expert_review(try_id: str, expert_id: str, final_scores: dict,
+                          comments: str, db_path: Path | None = None) -> dict:
+    """专家提交复评意见，写入 expert_review 表，更新 evaluation 状态，发消息给学生。"""
+    import uuid
+    conn = _connect(db_path)
+    # 先查机器分，计算差异
+    eval_row = conn.execute(
+        "SELECT eval_id, user_id, overall_percent, scores_json FROM evaluation WHERE try_id = ?",
+        (try_id,)).fetchone()
+    if not eval_row:
+        conn.close()
+        raise ValueError(f"try_id {try_id} 不存在")
+
+    machine_scores = json.loads(eval_row["scores_json"] or "{}")
+    machine_overall = float(eval_row["overall_percent"] or 0)
+    expert_overall = round(float(final_scores.get("overall_percent", 0)), 1)
+    delta = round(expert_overall - machine_overall, 1)
+
+    # 分歧维度
+    disagree_dims = []
+    score_deltas = {}
+    for d in ("D1", "D2", "D3", "D4"):
+        m_dim = machine_scores.get(d, {}).get("total", 0)
+        e_dim = final_scores.get(d, {}).get("total", 0)
+        d_diff = round(e_dim - m_dim, 1)
+        score_deltas[d] = d_diff
+        if abs(d_diff) >= 5:
+            disagree_dims.append(d)
+
+    review_id = f"rev_{uuid.uuid4().hex[:12]}"
+    conn.execute("""
+        INSERT INTO expert_review (review_id, try_id, expert_id, reviewed_at,
+                                   final_scores, comments, disagree_dims, score_deltas)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (review_id, try_id, expert_id, _now(),
+          json.dumps(final_scores, ensure_ascii=False),
+          comments,
+          json.dumps(disagree_dims, ensure_ascii=False),
+          json.dumps(score_deltas, ensure_ascii=False)))
+
+    # 更新 evaluation 状态
+    conn.execute("""
+        UPDATE evaluation SET review_status = 'expert_reviewed',
+                              expert_score = ?,
+                              calibration_note = ?
+        WHERE try_id = ?
+    """, (expert_overall, json.dumps(score_deltas, ensure_ascii=False), try_id))
+
+    # 给学生发消息
+    user_id = eval_row["user_id"]
+    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+    diff_text = f"（机器分 {machine_overall} → 专家分 {expert_overall}，差 {delta:+}）"
+    conn.execute("""
+        INSERT INTO message (message_id, user_id, type, related_try_id, title, content, is_read, created_at)
+        VALUES (?, ?, 'expert_review_ready', ?, ?, ?, 0, ?)
+    """, (msg_id, user_id, try_id,
+          "你的试讲专家复核已完成",
+          f"试讲 try_id={try_id} 的专家复核意见已出。{diff_text} 点击查看详情。",
+          _now()))
+    conn.commit()
+    conn.close()
+    return {"review_id": review_id, "machine_overall": machine_overall,
+            "expert_overall": expert_overall, "delta": delta,
+            "disagree_dims": disagree_dims}
+
+
+def get_unread_messages(user_id: str, db_path: Path | None = None) -> list[dict]:
+    """查询用户未读消息。"""
+    conn = _connect(db_path)
+    rows = conn.execute(
+        "SELECT * FROM message WHERE user_id = ? AND is_read = 0 ORDER BY created_at DESC",
+        (user_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_messages_read(user_id: str, message_ids: list[str] | None = None,
+                       db_path: Path | None = None) -> int:
+    """标记消息为已读。不传 message_ids 则全部标记已读。"""
+    conn = _connect(db_path)
+    if message_ids:
+        placeholders = ",".join("?" * len(message_ids))
+        conn.execute(f"UPDATE message SET is_read = 1 WHERE user_id = ? AND message_id IN ({placeholders})",
+                     (user_id, *message_ids))
+    else:
+        conn.execute("UPDATE message SET is_read = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    count = conn.total_changes
+    conn.close()
+    return count
+
+
+# ---------------- chat 对话 ----------------
+
+def save_chat_message(user_id: str, role: str, content: str, intent: str,
+                      session_id: str, db_path: Path | None = None) -> str:
+    """存一条 chat 消息。"""
+    import uuid
+    msg_id = f"chat_{uuid.uuid4().hex[:12]}"
+    conn = _connect(db_path)
+    conn.execute("""
+        INSERT INTO chat_message (message_id, user_id, role, content, intent, session_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (msg_id, user_id, role, content, intent, session_id, _now()))
+    conn.commit()
+    conn.close()
+    return msg_id
+
+
+def get_chat_history(user_id: str, session_id: str, limit: int = 20,
+                    db_path: Path | None = None) -> list[dict]:
+    """查某 session 的对话历史。"""
+    conn = _connect(db_path)
+    rows = conn.execute(
+        "SELECT role, content, intent, created_at FROM chat_message "
+        "WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC LIMIT ?",
+        (user_id, session_id, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in reversed(rows)]
+
+
+# ---------------- 系统校准 ----------------
+
+def compute_calibration_offset(db_path: Path | None = None) -> dict:
+    """计算系统偏差：机器分均值 - 专家分均值。
+    攒够足够样本后返回各维度偏差，样本不足返回空。
+    """
+    conn = _connect(db_path)
+    rows = conn.execute("""
+        SELECT e.scores_json, e.overall_percent, er.final_scores
+        FROM evaluation e
+        JOIN expert_review er ON e.try_id = er.try_id
+        WHERE e.review_status = 'expert_reviewed'
+    """).fetchall()
+    conn.close()
+
+    if len(rows) < 5:
+        return {"sample_size": len(rows), "offsets": {}, "note": "样本不足，至少需要5个专家复评"}
+
+    offsets = {"overall": [], "D1": [], "D2": [], "D3": [], "D4": []}
+    for row in rows:
+        machine = json.loads(row["scores_json"] or "{}")
+        expert = json.loads(row["final_scores"] or "{}")
+        # 总分偏差
+        m_overall = float(row["overall_percent"] or 0)
+        e_overall = float(expert.get("overall_percent", 0))
+        offsets["overall"].append(e_overall - m_overall)
+        # 各维度偏差
+        for d in ("D1", "D2", "D3", "D4"):
+            m_dim = machine.get(d, {}).get("total", 0)
+            e_dim = expert.get(d, {}).get("total", 0)
+            offsets[d].append(e_dim - m_dim)
+
+    # 算平均值
+    result = {"sample_size": len(rows), "offsets": {}}
+    for k, vals in offsets.items():
+        if vals:
+            result["offsets"][k] = round(sum(vals) / len(vals), 2)
+    result["note"] = "正值=机器分偏低需上调，负值=机器分偏高需下调"
+    return result
+
+
+def get_calibrated_score(overall_percent: float, dimension_scores: dict,
+                         db_path: Path | None = None) -> dict:
+    """根据系统偏差校准分数。样本不足则原样返回。"""
+    cal = compute_calibration_offset(db_path)
+    offsets = cal.get("offsets", {})
+    if not offsets:
+        return {"raw": overall_percent, "calibrated": overall_percent,
+                "offset": 0, "calibrated": False, "note": cal.get("note", "")}
+
+    offset = offsets.get("overall", 0)
+    calibrated = round(overall_percent + offset, 1)
+    return {
+        "raw": overall_percent,
+        "calibrated": calibrated,
+        "offset": offset,
+        "calibrated": True,
+        "sample_size": cal.get("sample_size", 0),
+        "note": f"基于{cal.get('sample_size')}个专家复评校准"
+    }
