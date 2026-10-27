@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -131,6 +132,97 @@ def growth(user_id: str, limit: int = 20) -> dict:
     """P0：个人成长时间线（成长曲线 + 短板热力图数据）。"""
     memory_store.init_db()
     return memory_store.get_growth_timeline(user_id, limit=limit)
+
+
+# ---------------- 知识库管理（P1） ----------------
+@app.get("/api/kb/documents")
+def kb_documents() -> dict:
+    """列出知识库文档（从 Chroma 聚合）。"""
+    import chromadb
+    client = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
+    col = client.get_collection(settings.COLLECTION)
+    data = col.get(include=["metadatas"])
+    files = {}
+    for m in data["metadatas"]:
+        f = m.get("source_file", "?")
+        if f not in files:
+            files[f] = {"name": f, "type": m.get("doc_type", "?"),
+                        "subject": m.get("subject", "?"), "chunks": 0}
+        files[f]["chunks"] += 1
+    return {"documents": list(files.values()), "total": len(files)}
+
+
+@app.post("/api/kb/search")
+def kb_search(body: dict) -> dict:
+    """检索测试。"""
+    from app.rag.retriever import retrieve
+    q = body.get("query", "")
+    if not q:
+        return {"results": []}
+    hits = retrieve(q, top_k=body.get("top_k", 5))
+    return {"results": hits}
+
+
+@app.post("/api/kb/upload")
+async def kb_upload(file: UploadFile):
+    """上传文件入库。"""
+    import shutil
+    save_dir = Path("datasets/knowledge_base/uploaded")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / file.filename
+    with open(save_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"ok": True, "filename": file.filename, "msg": "文件已保存，请运行入库脚本更新知识库"}
+
+
+@app.delete("/api/kb/documents/{source_file:path}")
+def kb_delete(source_file: str):
+    """删除指定文档（从 Chroma 中删除该 source_file 的所有片段）。"""
+    import chromadb
+    client = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
+    col = client.get_collection(settings.COLLECTION)
+    col.delete(where={"source_file": source_file})
+    return {"ok": True, "deleted": source_file}
+
+
+# ---------------- 老师看板（P2） ----------------
+@app.get("/api/dashboard/class")
+def dashboard_class() -> dict:
+    """班级聚合数据（从记忆表聚合）。"""
+    memory_store.init_db()
+    conn = memory_store._connect()
+    rows = conn.execute(
+        "SELECT user_id, scores_json, overall_percent FROM evaluation ORDER BY created_at"
+    ).fetchall()
+    conn.close()
+    import json
+    users = {}
+    for r in rows:
+        uid = r["user_id"]
+        if uid not in users:
+            users[uid] = {"scores": [], "dims": {}}
+        try:
+            s = json.loads(r["scores_json"])
+            users[uid]["scores"].append(r["overall_percent"])
+            for d in ("D1", "D2", "D3", "D4"):
+                users[uid]["dims"].setdefault(d, []).append(s.get(d, {}).get("total", 0))
+        except:
+            pass
+    # 聚合
+    all_scores = [u["scores"][-1] for u in users.values() if u["scores"]]
+    dim_avg = {}
+    for d in ("D1", "D2", "D3", "D4"):
+        vals = [v for u in users.values() for v in u["dims"].get(d, [])]
+        dim_avg[d] = round(sum(vals)/len(vals), 2) if vals else 0
+    students = [{"user_id": uid, "last_score": u["scores"][-1] if u["scores"] else 0,
+                 "avg_score": round(sum(u["scores"])/len(u["scores"]), 1) if u["scores"] else 0}
+                for uid, u in users.items()]
+    return {
+        "student_count": len(users),
+        "class_avg": round(sum(all_scores)/len(all_scores), 1) if all_scores else 0,
+        "dim_avg": dim_avg,
+        "students": students,
+    }
 
 
 @app.get("/api/traces")
