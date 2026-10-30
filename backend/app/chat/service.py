@@ -161,3 +161,139 @@ def chat(user_id: str, message: str, session_id: str | None = None) -> dict:
         "intent": intent,
         "session_id": session_id,
     }
+
+
+# ==================== 专家端 chat（教研助手） ====================
+
+EXPERT_CHAT_PROMPT = """【角色】
+你是资深师范教育教研员，现在给专家老师当教研助手。你的工作是：
+帮专家快速查数据、查课标、整理评语依据。你不是陪聊的，说话严谨、直接、给事实。
+
+【说话风格】
+1. 不说"作为AI助手"，不说废话，直接给结论和数据
+2. 用教研术语，比如"该生D2语言维度连续三次呈上升趋势"，不说"他进步很大哦"
+3. 给数据的时候列清楚：总分、各维度分、对比基准
+4. 不确定的就说"数据不足，建议人工核实"，不瞎编
+
+【你的能力】
+- 查指定学生的历史试讲记录和成长趋势
+- 检索课标、评课标准、优秀课例依据
+- 根据专家给的观察点，整理评语草稿
+- 分析机器分和专家分差异可能出在哪
+
+【边界】
+- 不替专家打分，只给数据和参考
+- 不评价专家的判断对不对
+- 超范围的问题直接说"这个我帮不上，建议查阅相关文件"
+"""
+
+
+def detect_expert_intent(message: str) -> str:
+    """专家端意图识别（按优先级匹配）。"""
+    msg = message.lower()
+    # 优先匹配动作类意图
+    if re.search(r"(评语|写一段|帮我写|整理|草稿|总结建议)", msg):
+        return "comment_draft"
+    if re.search(r"(分歧|差异|为什么差|机器分|专家分|不对|哪里错|哪里可能有问题)", msg):
+        return "disagreement_analysis"
+    if re.search(r"(课标|标准|要求|优秀|指标|评课|量表|维度标准)", msg):
+        return "curriculum_ref"
+    if re.search(r"(这个学生|他之前|进步|历史|趋势|几次|第几回|全班|班里|平均|对比)", msg):
+        return "student_history"
+    return "general"
+
+
+def build_student_profile_for_expert(student_id: str) -> str:
+    """给专家看的学生画像：历史分数、趋势、最弱维度。"""
+    lines = []
+    try:
+        history = memory_store.get_user_trials(student_id, limit=5)
+        trials = history.get("trials", [])
+        if trials:
+            lines.append(f"【学生 {student_id} 最近{len(trials)}次试讲】")
+            for i, t in enumerate(trials):
+                lines.append(f"  {i+1}. 总分 {t.get('overall_percent', '?')}，时间 {t.get('created_at', '')[:10]}")
+    except Exception:
+        pass
+
+    try:
+        growth = memory_store.get_growth_timeline(student_id)
+        pts = growth.get("points", [])
+        if len(pts) >= 2:
+            latest = pts[-1]
+            prev = pts[-2]
+            delta = round(latest["overall"] - prev["overall"], 1)
+            arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+            lines.append(f"【成长趋势】最近 {latest['overall']} 分，比上次 {arrow} {abs(delta)} 分")
+            dims = latest.get("dims", {})
+            if dims:
+                weak = min(dims.items(), key=lambda x: x[1])
+                dim_names = growth.get("dim_names", {})
+                lines.append(f"  最弱维度：{dim_names.get(weak[0], weak[0])}（{weak[1]}分）")
+    except Exception:
+        pass
+
+    return "\n".join(lines) if lines else "（该学生暂无历史记录）"
+
+
+def expert_chat(expert_id: str, message: str, student_id: str | None = None,
+                session_id: str | None = None) -> dict:
+    """专家端 chat 主入口。"""
+    if not session_id:
+        session_id = f"expert_{uuid.uuid4().hex[:8]}"
+
+    intent = detect_expert_intent(message)
+
+    # 读学生画像（如果指定了学生）
+    student_context = ""
+    if student_id:
+        student_context = build_student_profile_for_expert(student_id)
+
+    # 读最近对话历史
+    history = memory_store.get_chat_history(expert_id, session_id, limit=10)
+    history_text = "\n".join([f"{'专家' if h['role']=='user' else '助手'}：{h['content']}" for h in history])
+
+    # 根据意图决定要不要查 RAG
+    rag_context = ""
+    if intent in ("curriculum_ref", "comment_draft"):
+        try:
+            from app.rag import retriever
+            hits = retriever.retrieve(message, top_k=3)
+            if hits:
+                rag_context = retriever.build_context(hits, max_chars=1500)
+        except Exception:
+            pass
+
+    # 组装 prompt
+    system = EXPERT_CHAT_PROMPT
+    if student_context:
+        system += f"\n\n【当前学生情况】\n{student_context}"
+    if rag_context:
+        system += f"\n\n【相关课标/评课依据】\n{rag_context}"
+    system += f"\n\n【最近对话】\n{history_text}"
+
+    # 调 LLM
+    client = llm_client.get_llm_client()
+    try:
+        resp = client.chat.completions.create(
+            model=settings.LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": message},
+            ],
+            temperature=0.5,
+            max_tokens=800,
+        )
+        reply = resp.choices[0].message.content.strip()
+    except Exception as e:
+        reply = f"（系统异常：{e}）"
+
+    # 存对话（chat_type 区分学生端和专家端）
+    memory_store.save_chat_message(expert_id, "user", message, intent, session_id)
+    memory_store.save_chat_message(expert_id, "assistant", reply, intent, session_id)
+
+    return {
+        "reply": reply,
+        "intent": intent,
+        "session_id": session_id,
+    }

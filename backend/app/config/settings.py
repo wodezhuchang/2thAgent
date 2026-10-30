@@ -71,3 +71,7 @@ DISCLAIMER = "本评价为 AI 辅助练习建议，不作为课程最终考核�
 # 指标/Prompt 版本号（可复现，写入记忆 evaluation.prompt_version）
 INDICATOR_VERSION = "v1.0"
 PROMPT_VERSION = "v1.0"
+
+# ---------- 认证（多角色改造）----------
+JWT_SECRET = os.environ.get("JWT_SECRET", "doubao-shifan-eval-secret-v1")
+JWT_EXP_SECONDS = int(os.environ.get("JWT_EXP_SECONDS", str(7 * 24 * 3600)))

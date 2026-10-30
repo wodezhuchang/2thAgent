@@ -192,13 +192,24 @@ def node_memory_write(state: AgentState) -> dict:
             scores_dim[dim] = sval
     meta = state["meta"]
     try:
+        # 先写 trial（含课例元数据），再写 evaluation —— 保证 history / 复评清单可关联到课例名
+        memory_store.save_trial(
+            try_id=state["try_id"], user_id=state["user_id"],
+            subject=meta.get("subject", ""),
+            lesson_type=meta.get("lesson_type", ""),
+            grade_level=meta.get("grade_level", ""),
+            duration_seconds=int(meta.get("duration_seconds", 0) or 0),
+            video_path=meta.get("video_path", ""),
+            meta=meta)
         prog = memory_store.save_evaluation(
             user_id=state["user_id"], try_id=state["try_id"], scores=scores_dim,
             timeline_feedback=report.get("timeline_feedback", []),
             weaknesses=report.get("weaknesses", []),
             reflection_log=state.get("reflection"),
             raw_multimodal=state.get("multimodal"),
-            prompt_version=settings.PROMPT_VERSION)
+            prompt_version=settings.PROMPT_VERSION,
+            student_id=state["user_id"],
+            expert_id=meta.get("expert_id"))
         state["progress"] = prog
         # 训练规划
         tp = report.get("training_plan", {})
