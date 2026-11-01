@@ -746,12 +746,23 @@ def get_user_trials(user_id: str, limit: int = 20, db_path: Path | None = None) 
     """读取用户历史试讲（倒序）。以 evaluation 为主表聚合，保证无论 trial 表是否完整都能返回真实历史。"""
     conn = _connect(db_path)
     rows = conn.execute(
-        "SELECT e.try_id, t.subject, t.lesson_type, e.overall_percent, e.created_at "
+        "SELECT e.try_id, t.subject, t.lesson_type, t.grade_level, t.meta, "
+        "e.overall_percent, e.created_at, e.review_status, e.triage_route "
         "FROM evaluation e LEFT JOIN trial t ON t.try_id=e.try_id "
         "WHERE e.user_id=? ORDER BY e.created_at DESC LIMIT ?",
         (user_id, limit)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        # 从 trial.meta JSON 里提取 lesson 课题名
+        try:
+            meta = json.loads(d.pop("meta") or "{}")
+            d["lesson"] = meta.get("lesson", "")
+        except Exception:
+            d["lesson"] = ""
+        result.append(d)
+    return result
 
 
 # 维度短键 -> 前端报告长键
@@ -777,6 +788,8 @@ def get_full_report(try_id: str, db_path: Path | None = None) -> dict | None:
     prog = conn.execute(
         "SELECT * FROM progress WHERE user_id=? AND try_id=?",
         (ev["user_id"], try_id)).fetchone()
+    er = conn.execute(
+        "SELECT * FROM expert_review WHERE try_id=?", (try_id,)).fetchone()
     conn.close()
 
     ev_d = _row_to_eval_dict(ev)
@@ -791,11 +804,16 @@ def get_full_report(try_id: str, db_path: Path | None = None) -> dict | None:
     scores["overall_percent"] = ev["overall_percent"]
 
     tr_meta = {}
-    if tr and tr.get("meta"):
+    if tr:
         try:
-            tr_meta = json.loads(tr["meta"])
-        except Exception:
-            tr_meta = {}
+            raw_meta = tr["meta"]
+        except (KeyError, IndexError):
+            raw_meta = None
+        if raw_meta:
+            try:
+                tr_meta = json.loads(raw_meta)
+            except Exception:
+                tr_meta = {}
 
     report: dict = {
         "meta": {
@@ -806,12 +824,44 @@ def get_full_report(try_id: str, db_path: Path | None = None) -> dict | None:
             "grade_level": (tr and tr["grade_level"]) or tr_meta.get("grade_level") or "",
             "duration_seconds": (tr and tr["duration_seconds"]) or tr_meta.get("duration_seconds") or 600,
             "recorded_at": ev["created_at"],
+            "video_path": (tr and tr["video_path"]) or "",
         },
         "scores": scores,
         "timeline_feedback": ev_d.get("timeline_feedback") or [],
         "weaknesses": ev_d.get("weaknesses") or [],
         "review_status": (ev["review_status"] if "review_status" in ev.keys() else None) or "pending_expert",
     }
+    # 分流信息：从 evaluation 表读 triage_route，按时长分档
+    triage_route = ev["triage_route"] if "triage_route" in ev.keys() else None
+    duration_sec = (tr and tr["duration_seconds"]) or tr_meta.get("duration_seconds") or 0
+    if duration_sec < 300:
+        tier = f"短视频片段（{duration_sec//60}分{duration_sec%60}秒）"
+    elif duration_sec < 900:
+        tier = f"标准课时（{duration_sec//60}分钟）"
+    else:
+        tier = f"长课时（{duration_sec//60}分钟）"
+    if triage_route:
+        route_reason = {"A": "证据齐全，置信度达标，自动通过",
+                        "B": "存在低置信度维度，送专家复核",
+                        "C": "触发高风险硬规则，送专家复核"}.get(triage_route, "")
+        report["triage"] = {
+            "route": triage_route,
+            "reason": route_reason,
+            "hard_risks": [],
+            "duration_tier": tier,
+        }
+    if er:
+        try:
+            er_scores = json.loads(er["final_scores"] or "{}")
+        except Exception:
+            er_scores = {}
+        report["expert_review"] = {
+            "expert_id": er["expert_id"],
+            "reviewed_at": er["reviewed_at"],
+            "comments": er["comments"],
+            "diverged_dims": json.loads(er["disagree_dims"] or "[]"),
+            "final_scores": er_scores,
+        }
     if plan:
         report["training_plan"] = {
             "next_focus": plan["next_focus"],
@@ -858,7 +908,8 @@ def get_growth_timeline(user_id: str, limit: int = 20, db_path: Path | None = No
         "SELECT e.eval_id, e.try_id, e.scores_json, e.overall_percent, e.created_at, "
         "       (er.review_id IS NOT NULL) AS expert_reviewed "
         "FROM evaluation e LEFT JOIN expert_review er ON er.try_id=e.try_id "
-        "WHERE e.user_id=? ORDER BY e.created_at ASC, e.eval_id ASC LIMIT ?",
+        "WHERE e.user_id=? AND (e.review_status IS NULL OR e.review_status != 'returned') "
+        "ORDER BY e.created_at ASC, e.eval_id ASC LIMIT ?",
         (user_id, limit)).fetchall()
     conn.close()
 
@@ -899,15 +950,26 @@ def get_pending_reviews(expert_id: str | None = None, limit: int = 50,
     """
     conn = _connect(db_path)
     rows = conn.execute(
-        "SELECT e.try_id, e.user_id, e.overall_percent, e.triage_route, e.expert_id, "
-        "e.created_at, t.subject, t.lesson_type "
-        "FROM evaluation e LEFT JOIN trial t ON e.try_id = t.try_id "
-        "WHERE (e.review_status IS NULL OR e.review_status != 'auto_pass') "
+        "SELECT e.try_id, e.user_id, u.name AS student_name, e.overall_percent, "
+        "e.triage_route, e.expert_id, e.created_at, t.subject, t.lesson_type, t.grade_level, t.meta "
+        "FROM evaluation e "
+        "LEFT JOIN trial t ON e.try_id = t.try_id "
+        "LEFT JOIN user u ON e.user_id = u.user_id "
+        "WHERE e.review_status NOT IN ('auto_pass', 'expert_reviewed', 'returned') "
         "AND (? IS NULL OR e.expert_id = ?) "
         "ORDER BY e.created_at DESC LIMIT ?",
         (expert_id, expert_id, limit)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            meta = json.loads(d.pop("meta") or "{}")
+            d["lesson"] = meta.get("lesson", "")
+        except Exception:
+            d["lesson"] = ""
+        result.append(d)
+    return result
 
 
 # ---------------- 专家复评 ----------------

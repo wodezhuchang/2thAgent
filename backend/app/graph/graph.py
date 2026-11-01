@@ -87,8 +87,10 @@ def node_retrieve(state: AgentState) -> dict:
         context = "(RAG 检索失败: %s)" % e
         n_hits = 0
     state["retrieved_context"] = context
+    import hashlib
+    ctx_hash = hashlib.md5(context.encode("utf-8")).hexdigest()[:12]
     state["trace"].append({"step": "rag_retrieve", "query": query, "hits": n_hits,
-                           "via": "tool:rag_retrieve"})
+                           "context_hash": ctx_hash, "via": "tool:rag_retrieve"})
     return {"retrieved_context": context, "trace": state["trace"]}
 
 
@@ -107,7 +109,7 @@ def node_memory_read(state: AgentState) -> dict:
 
 
 def node_evaluate(state: AgentState) -> dict:
-    """④ 四维评价：调用 LLM 逐维打分。"""
+    """④ 四维评价：调用 LLM 逐维打分 + D1/D2 自洽复核。"""
     client = llm_client.get_llm_client()
     context = state.get("retrieved_context", "")
     mem = state.get("memory_summary", "")
@@ -115,9 +117,13 @@ def node_evaluate(state: AgentState) -> dict:
     multimodal = state.get("multimodal") or {}
     scores, dim_results = evaluator.eval_all_dimensions(
         client, meta, context, mem, multimodal)
+    # 自洽：D1/D2 重跑一次取均值，压缩分数波动
+    scores = evaluator.self_consistency(client, meta, context, mem, multimodal,
+                                        scores, dim_results)
     state["scores"] = scores
     state["dim_results"] = dim_results
-    state["trace"].append({"step": "evaluate", "overall": scores.get("overall_percent")})
+    state["trace"].append({"step": "evaluate", "overall": scores.get("overall_percent"),
+                           "self_consistency": "D1,D2"})
     return {"scores": scores, "dim_results": dim_results, "trace": state["trace"]}
 
 
@@ -155,14 +161,17 @@ def node_evidence_check(state: AgentState) -> dict:
 
 
 def node_triage(state: AgentState) -> dict:
-    """⑦ 智能分流：根据置信度和硬规则分 A/B/C 三路。"""
+    """⑦ 智能分流：根据置信度和硬规则分 A/B/C 三路（按时长分档）。"""
     from app.evaluator import evidence_check
     confidence = state.get("confidence") or {}
     multimodal = state.get("multimodal") or {}
-    result = evidence_check.triage(confidence, multimodal)
+    meta = state.get("meta") or {}
+    duration_sec = int(meta.get("duration_seconds", 0) or 0)
+    result = evidence_check.triage(confidence, multimodal, duration_sec)
     state["triage_result"] = result
     state["trace"].append({"step": "triage", "route": result["route"],
-                           "reason": result["reason"]})
+                           "reason": result["reason"],
+                           "duration_tier": result.get("duration_tier", "")})
     return {"triage_result": result, "trace": state["trace"]}
 
 
@@ -251,6 +260,15 @@ def node_finalize(state: AgentState) -> dict:
         "vs_previous_try_id": (state.get("progress") or {}).get("prev_try_id"),
         "trend": (state.get("progress") or {}).get("trend", report.get("progress_compare", {}).get("trend", "first_try")),
     }
+    # 写入分流结果和时长分档
+    triage = state.get("triage_result") or {}
+    if triage:
+        report["triage"] = {
+            "route": triage.get("route", "A"),
+            "reason": triage.get("reason", ""),
+            "hard_risks": triage.get("hard_risks", []),
+            "duration_tier": triage.get("duration_tier", ""),
+        }
     state["final_report"] = report
     state["trace"].append({"step": "finalize"})
     return {"final_report": report, "report": report, "trace": state["trace"]}

@@ -14,6 +14,9 @@ from typing import Any
 from app.config import settings
 from app.llm import llm_client
 
+# 评分维度用极低温度压制随机性；synthesize/reflect 仍用默认 0.2 保持生成灵活度
+SCORE_TEMPERATURE = 0.05
+
 
 def _dim_prompt(dim: str, meta: dict, context: str, memory_summary: str,
                 multimodal: dict) -> tuple[str, str]:
@@ -37,7 +40,7 @@ def eval_single_dimension(client, dim: str, meta: dict, context: str,
                           memory_summary: str, multimodal: dict) -> dict:
     """评价单个维度，返回 {dim, items:{指标:分}, comment}。"""
     system, user = _dim_prompt(dim, meta, context, memory_summary, multimodal)
-    out = llm_client.chat_json(client, system, user)
+    out = llm_client.chat_json(client, system, user, temperature=SCORE_TEMPERATURE)
     # 容错解析：可能返回 {D1:{...}} 或直接 {items:...}
     if dim in out:
         out = out[dim]
@@ -85,6 +88,45 @@ def eval_all_dimensions(client, meta: dict, context: str, memory_summary: str,
         overall += w * dim_avg
     scores["overall_percent"] = round(overall * 20, 1)
     return scores, results
+
+
+def self_consistency(client, meta: dict, context: str, memory_summary: str,
+                     multimodal: dict, scores: dict, dim_results: dict,
+                     dims_to_recheck: tuple = ("D1", "D2")) -> dict:
+    """评分自洽：对摆动最大的维度（D1教学设计/D2语言）重跑一次，取两次均值。
+
+    temperature=0.05 下仍有微小波动，二次评价取均值可进一步压缩极差。
+    返回修正后的 scores。
+    """
+    import copy
+    new_scores = copy.deepcopy(scores)
+    for dim in dims_to_recheck:
+        try:
+            rerun = eval_single_dimension(client, dim, meta, context, memory_summary, multimodal)
+            old_items = dim_results.get(dim, {}).get("items", {})
+            # 逐指标取两次均值
+            avg_items = {}
+            for k in settings.DIM_INDICATORS[dim]:
+                v1 = float(old_items.get(k, 0))
+                v2 = float(rerun["items"].get(k, 0))
+                avg_items[k] = round((v1 + v2) / 2, 2)
+            dim_results[dim]["items"] = avg_items
+            dim_results[dim]["comment"] = rerun["comment"] or dim_results[dim].get("comment", "")
+            # 更新 scores 对应键
+            key = {"D1": "D1_teaching_design", "D2": "D2_language",
+                   "D3": "D3_blackboard", "D4": "D4_presence"}[dim]
+            new_scores[key]["items"] = avg_items
+            new_scores[key]["total"] = round(sum(avg_items.values()) / len(avg_items), 2)
+        except Exception:
+            pass  # 重跑失败则保留原分
+    # 重算百分制
+    overall = 0.0
+    for dim, w in settings.DIM_WEIGHTS.items():
+        items = dim_results.get(dim, {}).get("items", {})
+        if items:
+            overall += w * sum(items.values()) / len(items)
+    new_scores["overall_percent"] = round(overall * 20, 1)
+    return new_scores
 
 
 def synthesize(client, meta: dict, scores: dict, dim_results: dict,

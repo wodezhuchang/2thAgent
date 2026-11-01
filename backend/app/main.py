@@ -205,6 +205,15 @@ async def evaluate_video(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"评价失败: {e}")
 
+    # 写入视频路径（record_trial 未传 video_path，这里补写）
+    try:
+        import sqlite3 as _sq
+        _conn = _sq.connect(str(settings.BASE_DIR / "data" / "memory" / "agent_memory.db"))
+        _conn.execute("UPDATE trial SET video_path=? WHERE try_id=?", (f"/uploads/{trial_id}{ext}", trial_id))
+        _conn.commit(); _conn.close()
+    except Exception:
+        pass
+
     out = result.get("final_report", {})
     out["sensing_steps"] = sensing["steps"]          # 感知工具执行记录
     out["sensing_elapsed"] = sensing["elapsed_sec"]   # 感知耗时
@@ -687,6 +696,11 @@ def expert_chat(body: dict) -> dict:
 def health() -> dict:
     return {"status": "ok", "service": "trial-eval-agent"}
 
+
+# 挂载上传目录，让前端能访问视频文件
+UPLOAD_DIR = settings.BASE_DIR / "datasets" / "uploads"
+if UPLOAD_DIR.exists():
+    app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # 挂载前端静态页面（放在所有 /api 路由之后，避免被静态文件接管）
 FRONTEND_DIR = settings.BASE_DIR / "frontend"

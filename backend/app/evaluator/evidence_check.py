@@ -49,30 +49,33 @@ def compute_confidence(multimodal: dict[str, Any]) -> dict[str, float]:
     return confidence
 
 
-def detect_hard_risk(multimodal: dict[str, Any]) -> list[str]:
+def detect_hard_risk(multimodal: dict[str, Any], duration_sec: int = 0) -> list[str]:
     """检测高风险硬规则，返回触发的风险列表（空列表=无风险）。
 
-    全部基于已跑完的ASR/timeline/OCR结果做事后统计，不增加延迟。
+    根据视频时长分档控制阀值：
+    - 短视频（<5分钟）：跳过「缺小结/练习」规则（片段式试讲本就不要求完整环节）
+    - 中长视频（≥5分钟）：全部硬规则生效
     """
     risks = []
 
-    # 规则1：互动次数过少（提问词出现 < 2次）
+    # 规则1：互动次数过少（提问词出现 < 2次）—— 所有时长都生效
     asr_text = multimodal.get("asr_text", "")
     if asr_text:
         question_count = sum(asr_text.count(w) for w in _QUESTION_WORDS)
         if question_count < 2:
             risks.append(f"互动次数过少（提问词仅{question_count}次，要求≥2次）")
 
-    # 规则2：时间轴缺环节（缺"小结"或缺"练习"）
-    timeline = multimodal.get("timeline", [])
-    if timeline:
-        segments = [t.get("segment", "") for t in timeline]
-        if "小结" not in segments:
-            risks.append("时间轴缺少「小结」环节")
-        if "练习" not in segments:
-            risks.append("时间轴缺少「练习」环节")
+    # 规则2：时间轴缺环节 —— 仅对 ≥5 分钟视频生效
+    if duration_sec >= 300:
+        timeline = multimodal.get("timeline", [])
+        if timeline:
+            segments = [t.get("segment", "") for t in timeline]
+            if "小结" not in segments:
+                risks.append("时间轴缺少「小结」环节")
+            if "练习" not in segments:
+                risks.append("时间轴缺少「练习」环节")
 
-    # 规则3：板书为空（OCR字数 < 10）
+    # 规则3：板书为空（OCR字数 < 10）—— 所有时长都生效
     board_text = multimodal.get("board_text", "")
     if not board_text or len(board_text.strip()) < 10:
         risks.append("板书内容过少（OCR识别字数<10）")
@@ -80,25 +83,40 @@ def detect_hard_risk(multimodal: dict[str, Any]) -> list[str]:
     return risks
 
 
-def triage(confidence: dict[str, float], multimodal: dict[str, Any]) -> dict[str, Any]:
+def video_duration_label(duration_sec: int) -> str:
+    """返回视频时长分档标签，用于报告展示。"""
+    if duration_sec <= 0:
+        return "未知时长"
+    if duration_sec < 300:
+        return f"短视频片段（{duration_sec//60}分{duration_sec%60}秒）"
+    if duration_sec < 900:
+        return f"标准课时（{duration_sec//60}分钟）"
+    return f"长课时（{duration_sec//60}分钟）"
+
+
+def triage(confidence: dict[str, float], multimodal: dict[str, Any],
+           duration_sec: int = 0) -> dict[str, Any]:
     """智能分流：根据置信度和硬规则结果，返回分流决定。
 
     返回：
     {
         "route": "A" | "B" | "C",
         "reason": str,
-        "weak_dims": list[str],   # 置信度不足的维度
-        "hard_risks": list[str],   # 触发的硬规则
+        "weak_dims": list[str],
+        "hard_risks": list[str],
+        "duration_tier": str,   # 时长分档标签
     }
     """
-    # 先查硬规则
-    hard_risks = detect_hard_risk(multimodal)
+    # 先查硬规则（传入时长做分档）
+    hard_risks = detect_hard_risk(multimodal, duration_sec)
+    tier = video_duration_label(duration_sec)
     if hard_risks:
         return {
             "route": "C",
             "reason": "触发高风险硬规则",
             "weak_dims": [],
             "hard_risks": hard_risks,
+            "duration_tier": tier,
         }
 
     # 再查低置信度维度
@@ -109,6 +127,7 @@ def triage(confidence: dict[str, float], multimodal: dict[str, Any]) -> dict[str
             "reason": f"存在低置信度维度：{', '.join(weak_dims)}",
             "weak_dims": weak_dims,
             "hard_risks": [],
+            "duration_tier": tier,
         }
 
     # 否则自动通过
@@ -117,4 +136,5 @@ def triage(confidence: dict[str, float], multimodal: dict[str, Any]) -> dict[str
         "reason": "证据齐全，置信度达标",
         "weak_dims": [],
         "hard_risks": [],
+        "duration_tier": tier,
     }

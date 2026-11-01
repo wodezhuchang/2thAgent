@@ -120,7 +120,7 @@ ASR_SPEC = ToolSpec(
 # OCR：从视频帧提取板书（D3）
 # ============================================================
 def _extract_frames(video_path: str, fps: float = 0.5) -> list[str]:
-    """低帧率抽帧，返回帧图片路径列表。"""
+    """低帧率抽帧，返回帧图片路径列表（按时间正序）。"""
     tmp = tempfile.mkdtemp(prefix="ocr_frames_")
     out_pat = str(Path(tmp) / "frame_%03d.png")
     subprocess.run([FFMPEG, "-y", "-i", video_path, "-vf", f"fps={fps}",
@@ -129,13 +129,26 @@ def _extract_frames(video_path: str, fps: float = 0.5) -> list[str]:
     return sorted(str(p) for p in Path(tmp).glob("frame_*.png"))
 
 
+def _even_sample(frames: list[str], max_n: int) -> list[str]:
+    """从全部帧中均匀抽 max_n 帧（覆盖整个视频时长，而非只看开头）。"""
+    if len(frames) <= max_n:
+        return frames
+    step = len(frames) / max_n
+    return [frames[int(i * step + step / 2)] for i in range(max_n)]
+
+
 def _ocr_board(video_or_image: str, max_frames: int = 30) -> dict:
-    """从视频帧/图片提取板书文字 + 版面信号。"""
+    """从视频帧/图片提取板书文字 + 版面信号。
+
+    采样策略：0.5fps 全量抽帧后，均匀选 max_frames 帧，覆盖整个视频时长，
+    避免长视频只识别到开头板书。
+    """
     from rapidocr_onnxruntime import RapidOCR
     ocr = RapidOCR()
     p = Path(video_or_image)
     if p.suffix.lower() in (".mp4", ".mkv", ".avi", ".mov", ".webm"):
-        frames = _extract_frames(str(p))[:max_frames]
+        all_frames = _extract_frames(str(p))
+        frames = _even_sample(all_frames, max_frames)
     else:
         frames = [str(p)]
 
