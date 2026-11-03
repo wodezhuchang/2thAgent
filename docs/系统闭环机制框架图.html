@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>师范生试讲智能评价 Agent — 知识库 RAG + 教师评价回流闭环机制图</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f5f7fb;
+    padding: 28px;
+    color: #1f2937;
+  }
+  h1 { text-align: center; font-size: 22px; margin-bottom: 4px; }
+  .subtitle { text-align: center; color: #6b7280; font-size: 13px; margin-bottom: 22px; }
+
+  .canvas {
+    position: relative;
+    width: 1480px;
+    margin: 0 auto;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 24px 28px 28px 28px;
+  }
+
+  /* 泳道标题 */
+  .lane-title {
+    font-size: 13px; font-weight: 700; color: #374151;
+    margin: 14px 0 8px 0; padding-left: 8px;
+    border-left: 4px solid #2563eb;
+  }
+  .lane-title.kb { border-color: #7c3aed; }
+  .lane-title.teacher { border-color: #dc2626; }
+  .lane-title.feedback { border-color: #059669; }
+
+  /* 通用节点 */
+  .node {
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    border: 1.5px solid #cbd5e1;
+    background: #fff;
+    text-align: center;
+    position: relative;
+  }
+  .node .t { font-weight: 700; font-size: 13px; display: block; margin-bottom: 3px; }
+  .node .d { color: #4b5563; font-size: 11.5px; }
+
+  /* 颜色分组 */
+  .n-input   { background:#eff6ff; border-color:#3b82f6; }
+  .n-perceive{ background:#f0f9ff; border-color:#0ea5e9; }
+  .n-rag     { background:#f5f3ff; border-color:#8b5cf6; }
+  .n-eval    { background:#fffbeb; border-color:#f59e0b; }
+  .n-triage  { background:#fef3c7; border-color:#d97706; }
+  .n-a       { background:#dcfce7; border-color:#16a34a; }
+  .n-b       { background:#fef9c3; border-color:#ca8a04; }
+  .n-c       { background:#fee2e2; border-color:#dc2626; }
+  .n-teacher { background:#fee2e2; border-color:#b91c1c; }
+  .n-fb-vec  { background:#d1fae5; border-color:#059669; }
+  .n-fb-num  { background:#dbeafe; border-color:#1d4ed8; }
+  .n-db      { background:#f3f4f6; border-color:#6b7280; font-family: Consolas, monospace; font-size:11.5px; }
+
+  /* 主流水线横向排列 */
+  .row { display: flex; align-items: stretch; gap: 0; }
+  .row .node { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+  /* 箭头用 CSS：在相邻节点之间画 */
+  .arrow {
+    align-self: center; color: #6b7280; font-size: 18px; font-weight: 700;
+    padding: 0 6px; flex: 0 0 auto;
+  }
+  .arrow.down { text-align: center; padding: 4px 0; }
+  .arrow-label {
+    font-size: 10.5px; color: #6b7280; display: block; font-weight: 400;
+  }
+
+  /* 三列分流 */
+  .trio { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 6px; }
+  .trio .node { min-height: 90px; }
+
+  /* 知识库面板 */
+  .kb-panel {
+    border: 1.5px dashed #8b5cf6; border-radius: 10px;
+    padding: 12px 14px; background: #faf5ff;
+    display: grid; grid-template-columns: 1.1fr 2fr 1.2fr; gap: 14px;
+  }
+  .kb-panel h4 { font-size: 13px; color:#6d28d9; margin-bottom:6px; }
+  .kb-chip {
+    display: inline-block; background:#fff; border:1px solid #c4b5fd;
+    border-radius: 999px; padding:2px 8px; font-size:11px; margin:2px;
+  }
+  .kb-table { font-size: 11.5px; line-height: 1.7; color:#374151; }
+  .kb-table b { color:#6d28d9; }
+
+  /* 反馈环路说明条 */
+  .loop {
+    border-radius: 10px; padding: 12px 16px; margin-top: 10px;
+    display: grid; grid-template-columns: 60px 1fr 1fr; gap: 16px; align-items: center;
+  }
+  .loop.l1 { background:#ecfdf5; border:1.5px solid #059669; }
+  .loop.l2 { background:#eff6ff; border:1.5px solid #1d4ed8; }
+  .loop .no {
+    font-size: 22px; font-weight: 800; text-align: center;
+  }
+  .loop.l1 .no { color:#059669; } .loop.l2 .no { color:#1d4ed8; }
+  .loop .body { font-size: 12.5px; line-height: 1.6; }
+  .loop .body b { font-size: 13px; }
+
+  /* 图例 */
+  .legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:14px; font-size:11.5px; color:#4b5563; }
+  .legend span::before {
+    content:""; display:inline-block; width:10px; height:10px; border-radius:2px;
+    margin-right:5px; vertical-align:middle; border:1.5px solid;
+  }
+  .lg-input::before { background:#eff6ff; border-color:#3b82f6; }
+  .lg-rag::before   { background:#f5f3ff; border-color:#8b5cf6; }
+  .lg-eval::before  { background:#fffbeb; border-color:#f59e0b; }
+  .lg-tri::before   { background:#fef3c7; border-color:#d97706; }
+  .lg-a::before     { background:#dcfce7; border-color:#16a34a; }
+  .lg-b::before     { background:#fef9c3; border-color:#ca8a04; }
+  .lg-c::before     { background:#fee2e2; border-color:#dc2626; }
+  .lg-fb::before    { background:#d1fae5; border-color:#059669; }
+</style>
+</head>
+<body>
+
+<h1>师范生试讲智能评价 Agent · 双闭环机制框架图</h1>
+<div class="subtitle">知识库 RAG 学科标签检索 ｜ 智能分流器 ｜ 教师复评 → 向量库回流 + 数值校准</div>
+
+<div class="canvas">
+
+  <!-- ========== ① 学生输入 ========== -->
+  <div class="lane-title">① 学生端输入</div>
+  <div class="row">
+    <div class="node n-input">
+      <span class="t">📤 学生上传试讲视频</span>
+      <span class="d">异步任务 task 表排队 → 后台线程跑 Agent</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-input">
+      <span class="t">📋 提交元数据 meta</span>
+      <span class="d">学科 subject ｜ 课题 lesson ｜ 课型 lesson_type<br>学段 grade_level ｜ 时长 duration_seconds</span>
+    </div>
+  </div>
+
+  <!-- ========== ② LangGraph 主流水线 ========== -->
+  <div class="lane-title">② LangGraph 机器评价主链（Plan-and-Execute）</div>
+  <div class="row">
+    <div class="node n-perceive">
+      <span class="t">① parse 解析</span>
+      <span class="d">生成 try_id<br>绑定 user_id</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-perceive">
+      <span class="t">② perceive 多模态感知</span>
+      <span class="d">ASR 语音转写<br>OCR 板书识别<br>姿态估计<br>教学时间轴</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-rag">
+      <span class="t">③ retrieve RAG 检索</span>
+      <span class="d">where 硬过滤<br>+ BGE 向量召回<br>→ 评课依据上下文</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-eval">
+      <span class="t">④ memory_read</span>
+      <span class="d">读该生上次评价<br>生成进步对比基线</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-eval">
+      <span class="t">⑤ evaluate 四维打分</span>
+      <span class="d">D1 教学设计 / D2 讲授语言<br>D3 板书 / D4 教态<br>+ D1D2 自洽复核</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-eval">
+      <span class="t">⑥ synthesize 合成报告</span>
+      <span class="d">时间轴评语 / 短板<br>进步对比 / 训练规划</span>
+    </div>
+  </div>
+
+  <div class="arrow down">▼</div>
+
+  <div class="row">
+    <div class="node n-triage">
+      <span class="t">⑦ evidence_check 证据链检查</span>
+      <span class="d">每维置信度 = 证据成功率(0.3/1.0) × RAG支持度(0.8)<br>硬规则：提问词&lt;2 次 / 板书&lt;10 字 / ≥5min 缺小结·练习</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-triage">
+      <span class="t">⑧ triage 智能分流器</span>
+      <span class="d">按时长分档应用硬规则<br>输出 A / B / C 路由</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-eval">
+      <span class="t">⑨ reflect Reflexion 自查</span>
+      <span class="d">幻觉 / 违背课标 / 遗漏环节<br>→ 自动修正报告</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-db">
+      <span class="t">⑩ memory_write 落库</span>
+      <span class="d">trial / evaluation<br>progress / training_plan<br>写入 triage_route</span>
+    </div>
+  </div>
+
+  <!-- ========== ③ 知识库面板（侧挂 retrieve） ========== -->
+  <div class="lane-title kb">③ Chroma 向量知识库（被 ③ retrieve 节点调用）— 双标签检索</div>
+  <div class="kb-panel">
+    <div>
+      <h4>🗂 维度1：doc_type 类型</h4>
+      <span class="kb-chip">curriculum 课标</span>
+      <span class="kb-chip">rubric 评课量表</span>
+      <span class="kb-chip">case 优秀课例</span>
+      <span class="kb-chip">rule 评课细则</span>
+      <span class="kb-chip" style="background:#d1fae5;border-color:#059669">recycled_case 回流争议课例</span>
+      <span class="kb-chip" style="background:#f3f4f6">general 通用</span>
+    </div>
+    <div>
+      <h4>🏫 维度2：subject 学科</h4>
+      <span class="kb-chip">高中语文</span><span class="kb-chip">高中数学</span><span class="kb-chip">高中英语</span>
+      <span class="kb-chip">高中物理</span><span class="kb-chip">高中化学</span><span class="kb-chip">高中生物</span>
+      <span class="kb-chip">高中历史</span><span class="kb-chip">高中地理</span><span class="kb-chip">思政</span>
+      <span class="kb-chip">义务教育各学科</span><span class="kb-chip">学前 / 体育 / 艺术 / 信息科技</span>
+      <span class="kb-chip" style="background:#f3f4f6">general 跨学科通用规范</span>
+    </div>
+    <div class="kb-table">
+      <b>检索逻辑：</b><br>
+      <code>where={"subject": meta.subject}</code> 硬过滤<br>
+      → BGE-small-zh 向量编码 query<br>
+      → cosine top-k 召回<br>
+      → 拼装 ≤4000 字上下文进 Prompt
+    </div>
+  </div>
+
+  <!-- ========== ④ 分流 A/B/C ========== -->
+  <div class="lane-title">④ 分流器三路出口（写入 evaluation.review_status）</div>
+  <div class="trio">
+    <div class="node n-a">
+      <span class="t">🟢 A 路 · 自动通过</span>
+      <span class="d">无硬风险 且 四维置信度均 ≥ 0.5<br>review_status = auto_pass<br>直接把报告返回给学生</span>
+    </div>
+    <div class="node n-b">
+      <span class="t">🟡 B 路 · 教师抽审弱维</span>
+      <span class="d">无硬风险，但存在置信度 &lt; 0.5 的维度<br>（如 OCR 失败 → D3 板书证据不足）<br>教师只需重点复核 weak_dims</span>
+    </div>
+    <div class="node n-c">
+      <span class="t">🔴 C 路 · 强制教师复评</span>
+      <span class="d">触发硬规则（互动不足 / 板书空 / 缺环节）<br>review_status = pending_expert<br>教师必须逐维复评</span>
+    </div>
+  </div>
+
+  <!-- ========== ⑤ 教师复评 ========== -->
+  <div class="lane-title teacher">⑤ 教师复评工作台（B / C 路进入）</div>
+  <div class="row">
+    <div class="node n-teacher">
+      <span class="t">👩‍🏫 教师修改分数 + 写校正意见</span>
+      <span class="d">提交 final_scores（D1-D4 + overall）<br>comments（必填，否则不回流）</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-db">
+      <span class="t">写入 expert_review 表</span>
+      <span class="d">自动计算 score_deltas = 专家分 − 机器分<br>|Δ| ≥ 5 自动标 disagree_dims</span>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="node n-teacher">
+      <span class="t">📨 通知学生</span>
+      <span class="d">把教师终稿 + 评语<br>推送给学生端</span>
+    </div>
+  </div>
+
+  <!-- ========== ⑥ 两个反馈闭环 ========== -->
+  <div class="lane-title feedback">⑥ 两条回流闭环（专家复评提交后 <b>旁路触发</b>，绝不阻断主流程）</div>
+
+  <div class="loop l1">
+    <div class="no">环 1</div>
+    <div class="body">
+      <b>🧠 知识闭环 —— 争议课例脱敏回流入向量库（recycle.py）</b><br>
+      <b>触发门槛：</b>总分差 ≥ 8 分 <b>或</b> 任一维度差 ≥ 2 分，且教师写了校正意见<br>
+      <b>处理：</b>去掉学生姓名/学号/user_id → 拼成"争议课例文本" → BGE 编码 → 以 <code>doc_type=case</code>、<code>subject=该课学科</code> 加入同一个 Chroma collection<br>
+      <b>幂等：</b>同一 try_id 只回流一次（按元数据 try_id 去重）<br>
+      <b>效果：</b>下次同学科学生上传类似课题，RAG 就能召回"人机分歧边界案例"，让 LLM 打分更贴近该教师口径
+    </div>
+    <div class="node n-fb-vec">
+      <span class="t">回到 ③ RAG 检索</span>
+      <span class="d">同学科再召回时<br>自动带上这条<br>"机器曾在此失手"<br>的边界案例</span>
+    </div>
+  </div>
+
+  <div class="loop l2">
+    <div class="no">环 2</div>
+    <div class="body">
+      <b>📏 数值闭环 —— 机器分 vs 专家分偏差校准（calibration offset）</b><br>
+      <b>样本门槛：</b>累积 ≥ 5 条 expert_review 才启用（样本不足不校准）<br>
+      <b>计算：</b>对每条复评取 (专家分 − 机器分)，按 overall / D1 / D2 / D3 / D4 分别求均值 offset<br>
+      <b>方向：</b>正值 = 机器一贯偏严需上调；负值 = 机器一贯偏松需下调<br>
+      <b>使用：</b><code>get_calibrated_score()</code> 在展示最终分时给 raw 分加 offset，并标注"基于 N 份专家复评校准"
+    </div>
+    <div class="node n-fb-num">
+      <span class="t">回到 ⑤ evaluate 分数</span>
+      <span class="d">后续机器分<br>自动加偏移量<br>逐步逼近教师口径<br>（带样本量标注）</span>
+    </div>
+  </div>
+
+  <!-- 图例 -->
+  <div class="legend">
+    <span class="lg-input">学生/输入</span>
+    <span class="lg-rag">RAG 知识库</span>
+    <span class="lg-eval">评价/合成</span>
+    <span class="lg-tri">分流决策</span>
+    <span class="lg-a">A 自动通过</span>
+    <span class="lg-b">B 抽审弱维</span>
+    <span class="lg-c">C 强制复评</span>
+    <span class="lg-fb">回流闭环</span>
+  </div>
+
+</div>
+</body>
+</html>

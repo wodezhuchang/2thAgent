@@ -136,6 +136,23 @@ def init_db(db_path: Path | None = None) -> None:
         PRIMARY KEY (student_id, teacher_id)
     );
     CREATE INDEX IF NOT EXISTS idx_binding_req_teacher ON binding_request(teacher_id, status);
+    CREATE TABLE IF NOT EXISTS task (
+        task_id     TEXT PRIMARY KEY,
+        user_id     TEXT,
+        try_id      TEXT,
+        status      TEXT DEFAULT 'pending',  -- pending / running / done / error
+        progress    INTEGER DEFAULT 0,         -- 0-100
+        stage       TEXT DEFAULT '',           -- 当前阶段描述
+        error       TEXT DEFAULT '',
+        created_at  TEXT,
+        updated_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_user ON task(user_id, status);
+    CREATE TABLE IF NOT EXISTS video_cache (
+        video_hash  TEXT PRIMARY KEY,
+        trial_id    TEXT,
+        created_at  TEXT
+    );
     CREATE INDEX IF NOT EXISTS idx_eval_user ON evaluation(user_id);
     CREATE INDEX IF NOT EXISTS idx_trial_user ON trial(user_id);
     CREATE INDEX IF NOT EXISTS idx_message_user ON message(user_id, is_read);
@@ -495,7 +512,7 @@ def get_student_reviews(user_id: str, db_path: Path | None = None) -> list[dict]
     rows = conn.execute(
         "SELECT e.try_id, e.overall_percent AS machine_overall, e.scores_json, "
         "       er.final_scores, er.comments, er.disagree_dims, er.reviewed_at, "
-        "       t.subject, t.lesson_type "
+        "       t.subject, t.lesson_type, t.meta "
         "FROM evaluation e JOIN expert_review er ON e.try_id = er.try_id "
         "LEFT JOIN trial t ON t.try_id = e.try_id "
         "WHERE e.user_id = ? ORDER BY er.reviewed_at ASC", (user_id,)).fetchall()
@@ -504,6 +521,13 @@ def get_student_reviews(user_id: str, db_path: Path | None = None) -> list[dict]
     result = []
     for r in rows:
         machine_overall = round(float(r["machine_overall"] or 0), 1)
+        # 从 meta JSON 里提取课题名
+        lesson = ""
+        try:
+            meta = json.loads(r["meta"] or "{}")
+            lesson = meta.get("lesson", "")
+        except Exception:
+            pass
         expert = {}
         try:
             expert = json.loads(r["final_scores"] or "{}")
@@ -516,7 +540,9 @@ def get_student_reviews(user_id: str, db_path: Path | None = None) -> list[dict]
             disagree = []
         result.append({
             "try_id": r["try_id"],
-            "subject": r["subject"] or r["lesson_type"] or "试讲",
+            "title": f"{r['subject'] or ''} · {lesson or r['lesson_type'] or '试讲'}",
+            "subject": r["subject"] or "",
+            "lesson": lesson,
             "machine_overall": machine_overall,
             "expert_overall": expert_overall,
             "delta": round(expert_overall - machine_overall, 1),
@@ -904,13 +930,15 @@ def get_growth_timeline(user_id: str, limit: int = 20, db_path: Path | None = No
     }
     """
     conn = _connect(db_path)
+    # 先取最新 N 条，再反转成时间升序（图表需要从左到右递增）
     rows = conn.execute(
-        "SELECT e.eval_id, e.try_id, e.scores_json, e.overall_percent, e.created_at, "
+        "SELECT e.eval_id, e.try_id, e.scores_json, e.overall_percent, e.expert_score, e.created_at, "
         "       (er.review_id IS NOT NULL) AS expert_reviewed "
         "FROM evaluation e LEFT JOIN expert_review er ON er.try_id=e.try_id "
         "WHERE e.user_id=? AND (e.review_status IS NULL OR e.review_status != 'returned') "
-        "ORDER BY e.created_at ASC, e.eval_id ASC LIMIT ?",
+        "ORDER BY e.created_at DESC, e.eval_id DESC LIMIT ?",
         (user_id, limit)).fetchall()
+    rows = list(reversed(rows))
     conn.close()
 
     dim_keys = {"D1_teaching_design": "D1", "D2_language": "D2",
@@ -933,6 +961,7 @@ def get_growth_timeline(user_id: str, limit: int = 20, db_path: Path | None = No
             "try_id": row["try_id"],
             "date": (row["created_at"] or "")[:10],
             "overall": round(float(row["overall_percent"] or 0), 1),
+            "expert_overall": round(float(row["expert_score"] or 0), 1) if row["expert_score"] else None,
             "dims": dims,
             "items": items,
             "expert_reviewed": bool(row["expert_reviewed"]),
@@ -1204,3 +1233,56 @@ def get_calibrated_score(overall_percent: float, dimension_scores: dict,
         "sample_size": cal.get("sample_size", 0),
         "note": f"基于{cal.get('sample_size')}个专家复评校准"
     }
+
+
+# ---------------- 异步任务 ----------------
+
+def create_task(task_id: str, user_id: str, try_id: str = "", db_path: Path | None = None) -> None:
+    conn = _connect(db_path)
+    now = _now()
+    conn.execute(
+        "INSERT INTO task (task_id, user_id, try_id, status, progress, stage, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (task_id, user_id, try_id, "pending", 0, "排队中", now, now))
+    conn.commit(); conn.close()
+
+
+def update_task(task_id: str, status: str | None = None, progress: int | None = None,
+                stage: str | None = None, error: str | None = None,
+                try_id: str | None = None, db_path: Path | None = None) -> None:
+    conn = _connect(db_path)
+    sets, vals = [], []
+    if status is not None: sets.append("status=?"); vals.append(status)
+    if progress is not None: sets.append("progress=?"); vals.append(progress)
+    if stage is not None: sets.append("stage=?"); vals.append(stage)
+    if error is not None: sets.append("error=?"); vals.append(error)
+    if try_id is not None: sets.append("try_id=?"); vals.append(try_id)
+    sets.append("updated_at=?"); vals.append(_now())
+    vals.append(task_id)
+    conn.execute(f"UPDATE task SET {', '.join(sets)} WHERE task_id=?", vals)
+    conn.commit(); conn.close()
+
+
+def get_task(task_id: str, db_path: Path | None = None) -> dict | None:
+    conn = _connect(db_path)
+    row = conn.execute("SELECT * FROM task WHERE task_id=?", (task_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ---------------- 视频哈希缓存 ----------------
+
+def get_cached_trial(video_hash: str, db_path: Path | None = None) -> str | None:
+    """根据视频哈希返回之前处理过的 trial_id，无缓存返回 None。"""
+    conn = _connect(db_path)
+    row = conn.execute("SELECT trial_id FROM video_cache WHERE video_hash=?", (video_hash,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def save_video_cache(video_hash: str, trial_id: str, db_path: Path | None = None) -> None:
+    conn = _connect(db_path)
+    conn.execute(
+        "INSERT OR REPLACE INTO video_cache (video_hash, trial_id, created_at) VALUES (?,?,?)",
+        (video_hash, trial_id, _now()))
+    conn.commit(); conn.close()

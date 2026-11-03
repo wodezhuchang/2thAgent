@@ -23,22 +23,42 @@ from app.tools import perception_tools, timeline_tool, pose_tool  # 导入即注
 from app.tools import senses_store
 
 
+def _get_video_duration(video_path: str) -> float:
+    """用 ffprobe 获取视频时长（秒），失败返回 0。"""
+    import subprocess as _sp, json as _json
+    try:
+        r = _sp.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", video_path],
+            capture_output=True, text=True, timeout=10)
+        info = _json.loads(r.stdout)
+        return float(info.get("format", {}).get("duration", 0))
+    except Exception:
+        return 0.0
+
+
 def perceive_video(video_path: str, trial_id: str,
                    asr_segments: list | None = None) -> dict:
     """统一调度四类感知工具，返回可送入评价的多模态信号 + 落盘档案。
 
     优化：ASR / OCR / pose 三个独立任务并行跑，timeline 依赖 ASR 结果。
+    采样帧数按时长自适应：短视频保持基线，长视频均匀加密采样。
     """
     steps: list[dict] = []
     t0 = time.time()
+
+    # 按时长自适应采样参数
+    duration = _get_video_duration(video_path)
+    ocr_max_frames = max(30, int(duration // 20)) if duration > 0 else 30   # 20分钟→60帧
+    pose_n_frames = max(20, int(duration // 30)) if duration > 0 else 20   # 20分钟→40帧
 
     # 并行跑三个独立任务：ASR、OCR、pose
     results = {}
     with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {
             ex.submit(registry.call, "asr_transcribe", video_or_audio=video_path): "asr",
-            ex.submit(registry.call, "ocr_board", video_or_image=video_path, max_frames=30): "ocr",
-            ex.submit(registry.call, "pose_analyze", video_path=video_path, n_frames=20): "pose",
+            ex.submit(registry.call, "ocr_board", video_or_image=video_path, max_frames=ocr_max_frames): "ocr",
+            ex.submit(registry.call, "pose_analyze", video_path=video_path, n_frames=pose_n_frames): "pose",
         }
         for f in as_completed(futures):
             name = futures[f]

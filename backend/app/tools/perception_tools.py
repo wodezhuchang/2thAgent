@@ -30,7 +30,10 @@ def _load_asr_model():
     global _asr_model
     if _asr_model is None:
         from faster_whisper import WhisperModel
-        _asr_model = WhisperModel(ASR_MODEL_SIZE, device="cpu", compute_type="int8")
+        import os
+        n_threads = max(1, os.cpu_count() - 1)
+        _asr_model = WhisperModel(ASR_MODEL_SIZE, device="cpu", compute_type="int8",
+                                  cpu_threads=n_threads)
     return _asr_model
 
 
@@ -52,8 +55,9 @@ def _asr_transcribe(video_or_audio: str) -> dict:
     else:
         audio = str(p)
     model = _load_asr_model()
-    segments, info = model.transcribe(audio, language="zh", beam_size=5,
-                                      word_timestamps=True, vad_filter=True)
+    segments, info = model.transcribe(audio, language="zh", beam_size=1,
+                                      word_timestamps=True, vad_filter=True,
+                                      vad_parameters=dict(min_silence_duration_ms=500))
     seg_list, words = [], []
     texts = []
     for seg in segments:

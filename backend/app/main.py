@@ -170,10 +170,12 @@ async def evaluate_video(
     duration_seconds: int = Form(600),
     expert_id: str = Form(""),
 ) -> dict:
-    """上传试讲视频 → 自动跑 ASR/OCR/姿态/时间轴感知 → 送入 Agent 评价。
+    """上传试讲视频 → 立即返回 task_id，后台异步跑感知+评价。前端轮询 /api/tasks/{task_id}。"""
+    if not expert_id:
+        raise HTTPException(status_code=400, detail="请先指定发送给哪位老师")
+    if not memory_store.is_bound(expert_id, user_id):
+        raise HTTPException(status_code=400, detail="该老师与你尚未建立绑定关系，无法发送")
 
-    expert_id：学生显式指定的发送对象（必须已与该老师建立绑定），防止错发/悬空。
-    """
     # 1. 保存视频
     ext = Path(video.filename or "video.mp4").suffix or ".mp4"
     trial_id = f"trial_{uuid.uuid4().hex[:10]}"
@@ -181,44 +183,101 @@ async def evaluate_video(
     with open(video_path, "wb") as f:
         shutil.copyfileobj(video.file, f)
 
-    # 2. 多模态感知（ASR+OCR+姿态+时间轴）
-    try:
-        sensing = perceive.perceive_video(str(video_path), trial_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"多模态感知失败: {e}")
+    # 2. 创建任务记录
+    task_id = f"task_{uuid.uuid4().hex[:10]}"
+    memory_store.create_task(task_id, user_id, trial_id)
 
-    # 3. 送入 Agent 评价
-    # 发送指定老师：显式指定 expert_id；未指定或未绑定则拒绝（避免错发/悬空/无关专家无义务处理）
-    if not expert_id:
-        raise HTTPException(status_code=400, detail="请先指定发送给哪位老师")
-    if not memory_store.is_bound(expert_id, user_id):
-        raise HTTPException(status_code=400, detail="该老师与你尚未建立绑定关系，无法发送")
+    # 3. 后台线程执行感知+评价
     meta = {
         "user_id": user_id,
         "expert_id": expert_id,
         "subject": subject, "lesson": lesson,
         "lesson_type": lesson_type, "grade_level": grade_level,
         "duration_seconds": duration_seconds,
+        "video_path": f"/uploads/{trial_id}{ext}",
     }
-    try:
-        result = graph.run_agent(meta, sensing["multimodal"], user_id=user_id, try_id=trial_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"评价失败: {e}")
 
-    # 写入视频路径（record_trial 未传 video_path，这里补写）
-    try:
-        import sqlite3 as _sq
-        _conn = _sq.connect(str(settings.BASE_DIR / "data" / "memory" / "agent_memory.db"))
-        _conn.execute("UPDATE trial SET video_path=? WHERE try_id=?", (f"/uploads/{trial_id}{ext}", trial_id))
-        _conn.commit(); _conn.close()
-    except Exception:
-        pass
+    def _run_task():
+        try:
+            # 计算视频哈希，检查是否已处理过同一条视频
+            import hashlib
+            h = hashlib.sha256()
+            with open(video_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            video_hash = h.hexdigest()
+            cached_trial = memory_store.get_cached_trial(video_hash)
 
-    out = result.get("final_report", {})
-    out["sensing_steps"] = sensing["steps"]          # 感知工具执行记录
-    out["sensing_elapsed"] = sensing["elapsed_sec"]   # 感知耗时
-    out["trial_id"] = trial_id
-    return out
+            if cached_trial:
+                from app.tools import senses_store
+                asr_data = senses_store.load_sense(cached_trial, "asr") or {}
+                if asr_data.get("result", {}).get("text"):
+                    # 缓存有效：复用上一次感知结果，跳过 ASR/OCR/pose
+                    memory_store.update_task(task_id, status="running", progress=30,
+                                            stage="复用上次感知结果（跳过ASR/OCR/姿态）")
+                    ocr_data = senses_store.load_sense(cached_trial, "ocr") or {}
+                    pose_data = senses_store.load_sense(cached_trial, "pose") or {}
+                    tl_data = senses_store.load_sense(cached_trial, "timeline") or {}
+                    asr_result = asr_data["result"]
+                    multimodal = {}
+                    if asr_result.get("text"): multimodal["asr_text"] = asr_result["text"]
+                    if asr_result.get("feats"): multimodal["audio_feats"] = asr_result["feats"]
+                    if ocr_data.get("result", {}).get("text"): multimodal["board_text"] = ocr_data["result"]["text"]
+                    if tl_data.get("result", {}).get("timeline"): multimodal["timeline"] = tl_data["result"]["timeline"]
+                    if pose_data.get("result", {}).get("metrics"): multimodal["posture"] = pose_data["result"]["metrics"]
+                    steps = [{"tool": "cache_hit", "ok": True, "source_trial": cached_trial}]
+                else:
+                    # 缓存指向的 trial 没有感知数据，回退到正常处理
+                    memory_store.update_task(task_id, status="running", progress=10, stage="多模态感知中（ASR/OCR/姿态）")
+                    sensing = perceive.perceive_video(str(video_path), trial_id)
+                    multimodal = sensing["multimodal"]
+                    steps = sensing["steps"]
+                    memory_store.save_video_cache(video_hash, trial_id)
+            else:
+                # 未命中：正常跑感知
+                memory_store.update_task(task_id, status="running", progress=10, stage="多模态感知中（ASR/OCR/姿态）")
+                sensing = perceive.perceive_video(str(video_path), trial_id)
+                multimodal = sensing["multimodal"]
+                steps = sensing["steps"]
+                # 保存视频哈希缓存
+                memory_store.save_video_cache(video_hash, trial_id)
+
+            memory_store.update_task(task_id, progress=60, stage="AI评价中")
+            result = graph.run_agent(meta, multimodal, user_id=user_id, try_id=trial_id)
+            # 补写视频路径
+            try:
+                import sqlite3 as _sq
+                _conn = _sq.connect(str(settings.BASE_DIR / "data" / "memory" / "agent_memory.db"))
+                _conn.execute("UPDATE trial SET video_path=? WHERE try_id=?", (f"/uploads/{trial_id}{ext}", trial_id))
+                _conn.commit(); _conn.close()
+            except Exception:
+                pass
+            memory_store.update_task(task_id, status="done", progress=100, stage="完成", try_id=trial_id)
+        except Exception as e:
+            import traceback
+            memory_store.update_task(task_id, status="error", error=str(e), stage=f"失败: {e}")
+            print(f"[TASK ERROR] {task_id}: {e}\n{traceback.format_exc()}", flush=True)
+
+    import threading
+    threading.Thread(target=_run_task, daemon=True).start()
+
+    return {"task_id": task_id, "try_id": trial_id, "status": "pending"}
+
+
+@app.get("/api/tasks/{task_id}")
+def get_task_status(task_id: str) -> dict:
+    """查询任务进度。"""
+    t = memory_store.get_task(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {
+        "task_id": t["task_id"],
+        "status": t["status"],
+        "progress": t["progress"],
+        "stage": t["stage"],
+        "try_id": t.get("try_id") or "",
+        "error": t.get("error") or "",
+    }
 
 
 @app.get("/api/users/{user_id}/history")

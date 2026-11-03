@@ -134,7 +134,7 @@ def node_synthesize(state: AgentState) -> dict:
     mem = state.get("memory_summary", "")
     meta = state["meta"]
     syn = evaluator.synthesize(client, meta, state["scores"], state["dim_results"],
-                               context, mem)
+                               context, mem, state.get("multimodal") or {})
     # 组装完整报告（对齐 JSON Schema）
     report = {
         "meta": {**meta, "recorded_at": meta.get("recorded_at", "")},

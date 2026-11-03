@@ -130,18 +130,30 @@ def self_consistency(client, meta: dict, context: str, memory_summary: str,
 
 
 def synthesize(client, meta: dict, scores: dict, dim_results: dict,
-               context: str, memory_summary: str) -> dict:
-    """合成：时间轴评语 + 短板清单 + 进步对比 + 训练规划（一次调用）。"""
+               context: str, memory_summary: str, multimodal: dict | None = None) -> dict:
+    """合成：时间轴评语 + 短板清单 + 进步对比 + 训练规划（一次调用）。
+
+    必须基于实际教学内容（ASR文本/板书/时间轴）写评语，禁止套话。
+    """
+    mm = multimodal or {}
+    asr_text = (mm.get("asr_text") or "")[:2000]  # 截断防超长
+    board_text = (mm.get("board_text") or "")[:1000]
+    timeline = mm.get("timeline") or []
+
     system = llm_client.build_system_prompt(context, memory_summary) + (
-        "\n基于已给出的四维评分，完成最后三项：\n"
-        "1. timeline_feedback：分段式细节评语，每条约含 timestamp_start/end、segment、issue、suggestion。\n"
-        "2. weaknesses：短板清单（2-5条，可落地）。\n"
+        "\n基于本次试讲的实际教学内容（语音转写、板书、时间轴）和四维评分，完成以下任务：\n"
+        "1. timeline_feedback：分段式细节评语，每条约含 timestamp_start/end、segment、issue、suggestion。"
+        "issue 必须引用教师实际说过的话或板书内容，禁止空泛套话。\n"
+        "2. weaknesses：短板清单（2-5条，结合具体教学行为，可落地）。\n"
         "3. progress_compare：对比用户历史（trend 取 improved/declined/flat/first_try）。\n"
         "4. training_plan：next_focus、specific_tasks（2-4条）、reference_case、estimated_repeat_times。\n"
         "严格输出 JSON：{timeline_feedback, weaknesses, progress_compare, training_plan}"
     )
     user = llm_client.build_user_prompt(meta, {"__scores__": scores}) + \
-        f"\n\n当前四维评分：{json.dumps(scores, ensure_ascii=False)}"
+        f"\n\n当前四维评分：{json.dumps(scores, ensure_ascii=False)}" + \
+        f"\n\n【教师语音转写（节选）】\n{asr_text or '(无)'}" + \
+        f"\n\n【板书识别】\n{board_text or '(无)'}" + \
+        f"\n\n【教学时间轴】\n{json.dumps(timeline, ensure_ascii=False)[:800]}"
     return llm_client.chat_json(client, system, user)
 
 
