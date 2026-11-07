@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>师范生试讲智能评价 Agent · 最终框架图</title>
+<style>
+  body { background: #fff; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; margin: 0; padding: 24px; }
+  h1 { text-align: center; font-size: 18px; margin-bottom: 4px; }
+  .sub { text-align: center; color: #888; font-size: 12px; margin-bottom: 20px; }
+  .wrap { display: flex; justify-content: center; }
+  svg { background: #fff; }
+  text { font-family: "Microsoft YaHei", sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>师范生试讲智能评价 Agent · 系统框架图</h1>
+<div class="sub">主链路 + 双回流闭环 + 学生能力提升闭环</div>
+
+<div class="wrap">
+<svg width="960" height="620" viewBox="0 0 960 620">
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#c0392b"/>
+    </marker>
+  </defs>
+
+  <!-- ========== 左列：学生端 ========== -->
+  <rect x="20" y="130" width="115" height="270" fill="none" stroke="#666" stroke-width="1.5" stroke-dasharray="6,4" rx="8"/>
+  <text x="77" y="155" text-anchor="middle" font-size="12" font-weight="bold" fill="#444">学生端</text>
+
+  <rect x="32" y="170" width="90" height="34" fill="#f0f4ff" stroke="#4a7fc0" stroke-width="1.5" rx="4"/>
+  <text x="77" y="191" text-anchor="middle" font-size="11" font-weight="bold">上传试讲视频</text>
+
+  <rect x="32" y="214" width="90" height="34" fill="#f0f4ff" stroke="#4a7fc0" stroke-width="1.5" rx="4"/>
+  <text x="77" y="228" text-anchor="middle" font-size="10.5" font-weight="bold">元数据标签</text>
+  <text x="77" y="242" text-anchor="middle" font-size="9" fill="#666">学科/课型/学段</text>
+
+  <rect x="32" y="258" width="90" height="34" fill="#f0f4ff" stroke="#4a7fc0" stroke-width="1.5" rx="4"/>
+  <text x="77" y="272" text-anchor="middle" font-size="10.5" font-weight="bold">指定指导教师</text>
+  <text x="77" y="286" text-anchor="middle" font-size="9" fill="#666">绑定专家</text>
+
+  <rect x="32" y="302" width="90" height="38" fill="#f0f4ff" stroke="#4a7fc0" stroke-width="1.5" rx="4"/>
+  <text x="77" y="319" text-anchor="middle" font-size="10.5" font-weight="bold">学生chat助手</text>
+  <text x="77" y="333" text-anchor="middle" font-size="9" fill="#666">朋友身份·了解该生数据</text>
+
+  <!-- 学生→主链 -->
+  <line x1="135" y1="187" x2="185" y2="170" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ========== 中列：后端主链（垂直） ========== -->
+  <rect x="185" y="145" width="150" height="55" fill="#fff" stroke="#333" stroke-width="2" rx="6"/>
+  <text x="260" y="168" text-anchor="middle" font-size="12" font-weight="bold">多模态感知+硬指标</text>
+  <text x="260" y="185" text-anchor="middle" font-size="9.5" fill="#666">ASR/OCR/姿态·TTT/提问/句长</text>
+
+  <rect x="185" y="225" width="150" height="45" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="2" rx="6"/>
+  <text x="260" y="245" text-anchor="middle" font-size="12" font-weight="bold">RAG 检索</text>
+  <text x="260" y="260" text-anchor="middle" font-size="9.5" fill="#666">课标/课例/细则·按学科过滤</text>
+
+  <line x1="260" y1="200" x2="260" y2="225" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="185" y="295" width="150" height="50" fill="#fffbeb" stroke="#f59e0b" stroke-width="2" rx="6"/>
+  <text x="260" y="317" text-anchor="middle" font-size="12" font-weight="bold">LLM① 主观打分</text>
+  <text x="260" y="334" text-anchor="middle" font-size="9.5" fill="#666">D1/D2/D4·自洽复核</text>
+
+  <line x1="260" y1="270" x2="260" y2="295" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="185" y="370" width="150" height="55" fill="#fdf0f3" stroke="#c0392b" stroke-width="2.5" rx="6"/>
+  <text x="260" y="392" text-anchor="middle" font-size="12" font-weight="bold" fill="#c0392b">调分器（核心）</text>
+  <text x="260" y="408" text-anchor="middle" font-size="9.5" fill="#666">查该老师参数组·有则按偏移</text>
+  <text x="260" y="420" text-anchor="middle" font-size="9.5" fill="#666">无则用默认参数</text>
+
+  <line x1="260" y1="345" x2="260" y2="370" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="185" y="445" width="150" height="65" fill="#fef9c3" stroke="#ca8a04" stroke-width="2" rx="6"/>
+  <text x="260" y="467" text-anchor="middle" font-size="12" font-weight="bold">综合四维分+置信度</text>
+  <text x="260" y="483" text-anchor="middle" font-size="9.5" fill="#16a34a">A 高置信度→自动过</text>
+  <text x="260" y="496" text-anchor="middle" font-size="9.5" fill="#ca8a04">B 弱置信度→自动/抽审</text>
+  <text x="260" y="509" text-anchor="middle" font-size="9.5" fill="#dc2626">C 硬风险→强制复评</text>
+
+  <line x1="260" y1="425" x2="260" y2="445" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ========== 右列：知识库 → 数据库 → 教师端 ========== -->
+  <!-- 知识库 -->
+  <rect x="400" y="120" width="150" height="55" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2" stroke-dasharray="6,4" rx="6"/>
+  <text x="475" y="143" text-anchor="middle" font-size="12" font-weight="bold">知识库（Chroma）</text>
+  <text x="475" y="160" text-anchor="middle" font-size="9.5" fill="#666">课标/优秀课例/争议课例/细则</text>
+
+  <!-- 知识库→RAG -->
+  <path d="M 400 148 L 335 247" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4,3" fill="none" marker-end="url(#arr)"/>
+
+  <!-- 数据库（和知识库间隔90px，拉长回流箭头） -->
+  <rect x="400" y="265" width="150" height="60" fill="#f3f4f6" stroke="#666" stroke-width="2" rx="6"/>
+  <text x="475" y="288" text-anchor="middle" font-size="12" font-weight="bold">数据库（SQLite）</text>
+  <text x="475" y="305" text-anchor="middle" font-size="9.5" fill="#666">trial/evaluation/expert_review</text>
+  <text x="475" y="317" text-anchor="middle" font-size="9.5" fill="#666">training_plan/calibration_profiles</text>
+
+  <!-- 分流→数据库：从分流右侧绕，不穿过调分器 -->
+  <path d="M 335 455 L 380 455 L 380 295 L 400 295" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- 教师端 -->
+  <rect x="400" y="365" width="150" height="210" fill="none" stroke="#666" stroke-width="1.5" stroke-dasharray="6,4" rx="8"/>
+  <text x="475" y="390" text-anchor="middle" font-size="12" font-weight="bold" fill="#444">教师端</text>
+
+  <rect x="415" y="405" width="120" height="45" fill="#fff" stroke="#333" stroke-width="2" rx="6"/>
+  <text x="475" y="425" text-anchor="middle" font-size="11" font-weight="bold">复评工作台</text>
+  <text x="475" y="440" text-anchor="middle" font-size="9" fill="#666">改分+写评语+时间轴</text>
+
+  <rect x="415" y="463" width="120" height="40" fill="#fff" stroke="#333" stroke-width="2" rx="6"/>
+  <text x="475" y="481" text-anchor="middle" font-size="11" font-weight="bold">教师助手chat</text>
+  <text x="475" y="495" text-anchor="middle" font-size="9" fill="#666">评语润色+学生常出问题</text>
+
+  <rect x="415" y="513" width="120" height="30" fill="#eef4ff" stroke="#4a7fc0" stroke-width="1.5" rx="6"/>
+  <text x="475" y="533" text-anchor="middle" font-size="10" fill="#1d4ed8">管理后台（校准中心）</text>
+
+  <!-- 数据库→教师端（B/C路复评任务） -->
+  <line x1="475" y1="325" x2="475" y2="405" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="490" y="365" text-anchor="start" font-size="10" fill="#666">B/C路复评任务</text>
+
+  <!-- 教师复评→数据库：从右侧绕 -->
+  <path d="M 535 405 L 560 405 L 560 295 L 550 295" stroke="#c0392b" stroke-width="1.5" fill="none" marker-end="url(#arr-r)"/>
+  <text x="565" y="350" text-anchor="start" font-size="10" fill="#c0392b" font-weight="600">复评结果回库</text>
+
+  <!-- ========== 回流闭环（红色虚线，数据库→知识库，箭头向上） ========== -->
+  <!-- 争议课例回流（左侧） -->
+  <line x1="415" y1="265" x2="415" y2="175" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr-r)"/>
+  <text x="408" y="220" text-anchor="middle" font-size="9.5" fill="#c0392b" font-weight="600" transform="rotate(-90, 408, 220)">争议课例回流</text>
+
+  <!-- 优秀课例回流（右侧） -->
+  <line x1="535" y1="265" x2="535" y2="175" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr-r)"/>
+  <text x="542" y="220" text-anchor="middle" font-size="9.5" fill="#c0392b" font-weight="600" transform="rotate(-90, 542, 220)">优秀课例回流</text>
+
+  <!-- 调分器参数更新：从数据库左侧绕到调分器 -->
+  <path d="M 400 295 L 370 295 L 370 397 L 335 397" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5,3" fill="none" marker-end="url(#arr-r)"/>
+  <text x="378" y="345" text-anchor="middle" font-size="10" fill="#c0392b" font-weight="600">参数自动更新</text>
+
+  <!-- ========== 底部：学生能力提升闭环 ========== -->
+  <rect x="185" y="540" width="150" height="45" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2" rx="6"/>
+  <text x="260" y="560" text-anchor="middle" font-size="11" font-weight="bold">LLM② 元报告</text>
+  <text x="260" y="576" text-anchor="middle" font-size="9.5" fill="#666">历次报告总结+短板模式</text>
+
+  <!-- 数据库→LLM②：从数据库左下侧绕 -->
+  <path d="M 400 310 L 350 310 L 350 562 L 335 562" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+  <rect x="20" y="540" width="140" height="45" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2" rx="6"/>
+  <text x="90" y="560" text-anchor="middle" font-size="11" font-weight="bold">任务清单（可打勾）</text>
+  <text x="90" y="576" text-anchor="middle" font-size="9.5" fill="#666">动态生成·条数可控</text>
+
+  <line x1="185" y1="562" x2="160" y2="562" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 任务清单→学生 -->
+  <path d="M 90 540 L 90 340" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5,3" fill="none" marker-end="url(#arr-r)"/>
+  <text x="100" y="440" text-anchor="start" font-size="10" fill="#c0392b" font-weight="600">实践促提升</text>
+
+  <!-- 课前瞻优：知识库→学生 -->
+  <path d="M 400 135 L 77 135 L 77 170" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5,3" fill="none" marker-end="url(#arr-r)"/>
+  <text x="240" y="127" text-anchor="middle" font-size="10" fill="#c0392b" font-weight="600">课前瞻优：优秀课例推荐+课标指导</text>
+
+  <!-- A路→学生 -->
+  <path d="M 185 480 L 155 480 L 155 340 L 122 340" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <text x="148" y="420" text-anchor="middle" font-size="10" fill="#16a34a">A路自动过</text>
+
+</svg>
+</div>
+
+</body>
+</html>
